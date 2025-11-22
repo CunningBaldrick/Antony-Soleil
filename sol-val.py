@@ -36,8 +36,9 @@ REGISTER_GEN_CODE_FIELD = "codefiliere"                       # 'SOLAI'
 REGISTER_GEN_FIELD = "filiere"                                # 'Solaire'
 REGISTER_NUM_FIELD = "nbinstallations"
 REGISTER_TECH_CODE_FIELD = "codetechnologie"                  # 'PHOTV'
-REGISTER_POWER_FIELD = "puismaxinstallee"                     # kW
+REGISTER_POWER_FIELD = "puismaxrac"                           # kW
 REGISTER_PROD_1Y_FIELD = "energieannuelleglissanteinjectee"   # kWh
+REGISTER_PROD_1Y_FIELD_OLD = "energieannuelleinjectee"        # Before 2020; kWh
 REGISTER_TENSION_FIELD = "tensionraccordement"
 REGISTER_NAME_FIELD = "nominstallation"
 
@@ -300,8 +301,8 @@ def dump_antony() -> None:
 
     codes_iris = sorted(list(codes_iris), key=lambda x: (x is not None, x))
 
-#    fields = ['codeiris', 'dateraccordement', 'datederaccordement', 'datemiseenservice', 'tensionraccordement', 'puismaxinstallee', 'puismaxrac', 'nbinstallations', 'energieannuelleglissanteinjectee', 'maxpuis', 'datemiseenservice_date']
-    fields = ['nbinstallations', 'puismaxinstallee', 'energieannuelleglissanteinjectee', 'nominstallation']
+#    fields = ['codeiris', 'dateraccordement', 'datederaccordement', 'datemiseenservice', 'tensionraccordement', 'puismaxinstallee', 'puismaxrac', 'nbinstallations', 'energieannuelleglissanteinjectee', 'energieannuelleinjectee', 'maxpuis', 'datemiseenservice_date']
+    fields = ['nbinstallations', 'puismaxrac', 'energieannuelleglissanteinjectee', 'energieannuelleinjectee', 'nominstallation']
     print('code iris\tyear\t' + '\t'.join(fields))
     for code_iris in codes_iris:
         print(code_iris or "?????????")
@@ -317,39 +318,7 @@ def dump_antony() -> None:
 
 def main() -> None:
 #    calibrate()
-#    dump_antony()
-
-    for year in range(2020, 2050):
-        params = {
-            "where": (
-                f"{REGISTER_COMMUNE_FIELD}='{INSEE_ANTONY}'"
-                f" AND {REGISTER_GEN_CODE_FIELD} like 'SOLAI'"
-                f" AND {REGISTER_TECH_CODE_FIELD} like 'PHOTV'"
-            ),
-            "select": (
-                f"sum({REGISTER_NUM_FIELD}) AS total_inst"
-                f", sum({REGISTER_POWER_FIELD}) as pow_inst_kw"
-                f", sum({REGISTER_PROD_1Y_FIELD}) as prod_1y_kwh"
-            ),
-            "group_by": f"{REGISTER_ISLAND_FIELD}",
-            "limit": 100,
-        }
-
-        try:
-            data = fetch_odre(registre_dataset(year), params)
-        except requests.exceptions.HTTPError as e:
-            status = e.response.status_code if e.response is not None else None
-            if status == 404:
-                # This yearly snapshot does not exist: stop, previous year was last
-                break
-            raise
-
-        print(f"{year}: {data}")
-        year = year + 1
-
-
-def get_pv_capacity_antony_total_kw(year: int | None) -> float:
-    return get_pv_capacity_total_kw(REGISTER_COMMUNE_FIELD, INSEE_ANTONY, year, "Antony")
+    dump_antony()
 
 
 if __name__ == "__main__":

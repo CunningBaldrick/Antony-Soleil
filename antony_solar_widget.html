@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <title>Antony Solaire – Widget IRIS</title>
+  <title>Antony Solaire – Widget Photovoltaïque</title>
   <!-- Chart.js from CDN -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
@@ -41,15 +41,15 @@
   </style>
 </head>
 <body>
-  <h1>Antony – solaire (data ODRE)</h1>
+  <h1>Antony – photovoltaïque (data ODRE)</h1>
 
   <div class="controls">
     <div>
       <label for="metric-select">Afficher :</label>
       <select id="metric-select">
-        <option value="total_inst">Nombre d'installations</option>
+        <option value="prod_1y_kwh">Production annuelle</option>
         <option value="pow_inst_kw">Puissance installée</option>
-        <option value="prod_1y_kwh">Énergie annuelle glissante</option>
+        <option value="total_inst">Nombre d'installations</option>
       </select>
     </div>
 
@@ -112,11 +112,11 @@
         unit: "",
       },
       pow_inst_kw: {
-        label: "Puissance installée",
+        label: "Puissance photovoltaïque raccordée au réseau",
         unit: "kW",
       },
       prod_1y_kwh: {
-        label: "Énergie annuelle glissante",
+        label: "Production annuelle vers le réseau",
         unit: "kWh",
       },
     };
@@ -127,7 +127,7 @@
 
     let dataByYear = {};     // { 2020: [ {codeiris, total_inst, pow_inst_kw, prod_1y_kwh}, ...], ... }
     let years = [];          // [2020, 2021, ...]
-    let irisList = [];       // distinct IRIS codes (including "Inconnu")
+    let irisList = [];       // distinct IRIS codes
     let chart = null;        // Chart.js instance
 
     // ------------
@@ -142,7 +142,7 @@
 
     function irisDisplayName(codeiris) {
       if (codeiris === null || codeiris === undefined) {
-        return "Inconnu";
+        return "Quartier inconnu";
       }
       if (IRIS_LABELS[codeiris]) {
         return IRIS_LABELS[codeiris];
@@ -180,14 +180,16 @@
       return true;
     }
 
-    async function findAvailableYears(firstYear = 2020, maxFutureYears = 2) {
+    async function findAvailableYears(firstYear = 2017, firstYearToTest = 2025, maxFutureYears = 2) {
       const currentYear = new Date().getFullYear();
       const years = [];
 
       for (let year = firstYear; year <= currentYear + maxFutureYears; year++) {
-        const datasetId = registreDatasetId(year);
-        const exists = await datasetExists(datasetId);
-        if (!exists) break;
+        if (year >= firstYearToTest) {
+          const datasetId = registreDatasetId(year);
+          const exists = await datasetExists(datasetId);
+          if (!exists) break;
+        }
         years.push(year);
       }
 
@@ -200,13 +202,21 @@
     async function fetchAntonyYearData(year) {
       const datasetId = registreDatasetId(year);
       const base = `${ODRE_BASE}/${datasetId}/records`;
+
+      // Before 2020: "energieannuelleinjectee"
+      // From 2020 onwards: "energieannuelleglissanteinjectee"
+      const energyField =
+        year < 2020
+          ? "energieannuelleinjectee"
+          : "energieannuelleglissanteinjectee";
+
       const params = new URLSearchParams({
         where: `codeinseecommune='${INSEE_ANTONY}' AND codefiliere like 'SOLAI' AND codetechnologie like 'PHOTV'`,
         select: [
           "codeiris as codeiris",
           "sum(nbinstallations) as total_inst",
-          "sum(puismaxinstallee) as pow_inst_kw",
-          "sum(energieannuelleglissanteinjectee) as prod_1y_kwh",
+          "sum(puismaxrac) as pow_inst_kw",
+          `sum(${energyField}) as prod_1y_kwh`,
         ].join(", "),
         group_by: "codeiris",
         limit: "100",
@@ -366,8 +376,7 @@
     async function init() {
       try {
         setStatus("Recherche des années disponibles…");
-        // energieannuelleglissanteinjectee only fully available from 2020 on.
-        years = await findAvailableYears(2020);
+        years = await findAvailableYears();
         setStatus(`Années disponibles : ${years.join(", ")}. Chargement des données d'Antony…`);
 
         // Fetch Antony data for each year

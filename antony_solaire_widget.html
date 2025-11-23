@@ -2,6 +2,9 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0">
   <title>Antony Solaire – Widget Photovoltaïque</title>
   <!-- Chart.js from CDN -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -29,12 +32,7 @@
       padding: 0.25rem 0.5rem;
       font-size: 0.95rem;
     }
-    #h-status {
-      margin-top: 0.5rem;
-      font-size: 0.9rem;
-      color: #555;
-    }
-    #rt-status {
+    .status {
       margin-top: 0.5rem;
       font-size: 0.9rem;
       color: #555;
@@ -67,7 +65,7 @@
     </div>
   </div>
 
-  <div id="h-status">Chargement des données…</div>
+  <div id="h-status" class="status">Chargement des données…</div>
 
   <canvas id="solarChart" width="800" height="400"></canvas>
 
@@ -83,7 +81,7 @@
     </div>
   </div>
 
-  <div id="rt-status">Chargement de l'irradiance…</div>
+  <div id="rt-status" class="status">Chargement de l'irradiance…</div>
   <canvas id="realtimeChart" width="800" height="300"></canvas>
 
   <script>
@@ -91,38 +89,39 @@
     // Configuration / constants
     // -------------------------
 
-    const ODRE_BASE = "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets";
+    const ODRE_BASE =
+      "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets";
     const INSEE_ANTONY = "92002";
 
     // IRIS code name map.
     const IRIS_LABELS = {
-      "920020101": "Parc de Sceaux",
-      "920020102": "Nouveau Cimetière",
-      "920020103": "La Fontaine",
-      "920020104": "U.S. Métro",
-      "920020105": "Croix de Berny",
-      "920020106": "Velpeau",
-      "920020107": "Jean Moulin",
-      "920020201": "11 Novembre",
-      "920020202": "Guillebaud",
-      "920020203": "Chemin de Fer",
-      "920020204": "Bois de l'Aurore",
-      "920020205": "Zone d'Activités",
-      "920020301": "Pajeaud",
-      "920020302": "Parvis du Breuil et de la Bièvre",
-      "920020303": "Fontaine Michalon",
-      "920020304": "Conservatoire Darius Milhaud",
-      "920020305": "Grand l",
-      "920020306": "Lionel Terray",
-      "920020307": "Fontaine Mouton",
-      "920020308": "Baconnets",
-      "920020401": "Parc Heller",
-      "920020402": "Céline",
-      "920020403": "Hôtel de Ville",
-      "920020404": "Clinique du Bois de Verrières",
-      "920020405": "Ancien Cimetière",
-      "920020406": "Bas Graviers",
-      "920020407": "Les Godets",
+      920020101: "Parc de Sceaux",
+      920020102: "Nouveau Cimetière",
+      920020103: "La Fontaine",
+      920020104: "U.S. Métro",
+      920020105: "Croix de Berny",
+      920020106: "Velpeau",
+      920020107: "Jean Moulin",
+      920020201: "11 Novembre",
+      920020202: "Guillebaud",
+      920020203: "Chemin de Fer",
+      920020204: "Bois de l'Aurore",
+      920020205: "Zone d'Activités",
+      920020301: "Pajeaud",
+      920020302: "Parvis du Breuil et de la Bièvre",
+      920020303: "Fontaine Michalon",
+      920020304: "Conservatoire Darius Milhaud",
+      920020305: "Grand l",
+      920020306: "Lionel Terray",
+      920020307: "Fontaine Mouton",
+      920020308: "Baconnets",
+      920020401: "Parc Heller",
+      920020402: "Céline",
+      920020403: "Hôtel de Ville",
+      920020404: "Clinique du Bois de Verrières",
+      920020405: "Ancien Cimetière",
+      920020406: "Bas Graviers",
+      920020407: "Les Godets",
     };
 
     // Metrics definitions for the historical toggle
@@ -148,31 +147,32 @@
     // NOTE: Could use per-IRIS latitude and longitude, but probably it
     // wouldn't change anything as the satellite resolution is ~5km and
     // Antony is about 5km across.
-    const ANT_LAT = 48.75363; const ANT_LON = 2.29589; // Town hall.
+    const ANT_LAT = 48.75363; // Town hall.
+    const ANT_LON = 2.29589;
 
-    const PANEL_TILT_DEG = 30;   // typical rooftop tilt
+    const PANEL_TILT_DEG = 30; // typical rooftop tilt
     const PANEL_AZIMUTH_DEG = 0; // 0 = south
 
-    const CALIB_K = 0.52;        // calibration factor, see calibrate.py
+    const CALIB_K = 0.52; // calibration factor, see calibrate.py
 
-    const RT_PAST_HOURS = 24;           // look back this many hours
-    const RT_REFRESH_MINUTES = 17;      // how often we refresh the curve
-    const RT_REFRESH_INTERVAL_MS = RT_REFRESH_MINUTES * 60 * 1000
+    const RT_PAST_HOURS = 24; // look back this many hours
+    const RT_REFRESH_MINUTES = 17; // how often we refresh the curve
+    const RT_REFRESH_INTERVAL_MS = RT_REFRESH_MINUTES * 60 * 1000;
 
     // ------------
     // State
     // ------------
 
-    let dataByYear = {};     // { 2017: [ {codeiris, nb_inst, puis_rac_kw, prod_an_kwh}, ...], ... }
-    let years = [];          // [2017, 2018, ...]
-    let irisList = [];       // distinct IRIS codes
-    let hchart = null;       // Chart.js instance for historical widget
+    let dataByYear = {}; // { 2017: [ {codeiris, nb_inst, puis_rac_kw, prod_an_kwh}, ...], ... }
+    let years = []; // [2017, 2018, ...]
+    let irisList = []; // distinct IRIS codes
+    let histChart = null; // Chart.js instance for historical widget
 
-    let rtIrrSeries = [];    // [{ time, gti_w_per_m2 }, ...]
-    let rtCapTotalKw = 0;    // total installed PV capacity (kW)
-    let rtCapPerIris = [];   // [{ codeiris, puis_ins_kw }, ...]
+    let rtIrrSeries = []; // [{ time, gti_w_per_m2 }, ...]
+    let rtCapTotalKw = 0; // total installed PV capacity (kW)
+    let rtCapPerIris = []; // [{ codeiris, puis_ins_kw }, ...]
     let lastRtFetchTime = 0; // timestamp (ms) of last successful real-time fetch
-    let rtChart = null;      // Chart.js instance for real-time widget
+    let rtChart = null; // Chart.js instance for real-time widget
 
     // ------------
     // Utilities
@@ -194,14 +194,30 @@
       return `Secteur ${codeiris}`;
     }
 
-    function setStatus(msg) {
-      const el = document.getElementById("h-status");
+    function setStatus(id, msg) {
+      const el = document.getElementById(id);
       if (el) el.textContent = msg;
     }
 
+    function setHistStatus(msg) {
+      setStatus("h-status", msg);
+    }
+
     function setRealtimeStatus(msg) {
-      const el = document.getElementById("rt-status");
-      if (el) el.textContent = msg;
+      setStatus("rt-status", msg);
+    }
+
+    function showError(id, prefix, err) {
+      console.error(err);
+      setStatus(id, `${prefix} : ${err.message}`);
+    }
+
+    function showHistError(prefix, err) {
+      showError("h-status", prefix, err);
+    }
+
+    function showRealtimeError(prefix, err) {
+      showError("rt-status", prefix, err);
     }
 
     // ------------
@@ -229,12 +245,16 @@
       return true;
     }
 
-    async function findAvailableYears(firstYear = 2017, firstYearToTest = 2025, maxFutureYears = 2) {
+    async function findAvailableYears(
+      firstYear = 2017,
+      probeFromYear = 2025,
+      maxFutureYears = 2,
+    ) {
       const currentYear = new Date().getFullYear();
       const years = [];
 
       for (let year = firstYear; year <= currentYear + maxFutureYears; year++) {
-        if (year >= firstYearToTest) {
+        if (year >= probeFromYear) {
           const datasetId = registreDatasetId(year);
           const exists = await datasetExists(datasetId);
           if (!exists) break;
@@ -260,7 +280,11 @@
           : "energieannuelleglissanteinjectee";
 
       const params = new URLSearchParams({
-        where: `codeinseecommune='${INSEE_ANTONY}' AND codefiliere like 'SOLAI' AND codetechnologie like 'PHOTV'`,
+        where: [
+          `codeinseecommune='${INSEE_ANTONY}'`,
+          "codefiliere like 'SOLAI'",
+          "codetechnologie like 'PHOTV'",
+        ].join(" AND "),
         select: [
           "codeiris as codeiris",
           "sum(nbinstallations) as nb_inst",
@@ -280,11 +304,16 @@
 
     async function fetchAntonyCurrentInstalledCapacityKw() {
       // Latest aggregate dataset (no year suffix)
-      const datasetId = "registre-national-installation-production-stockage-electricite-agrege";
+      const datasetId =
+        "registre-national-installation-production-stockage-electricite-agrege";
       const base = `${ODRE_BASE}/${datasetId}/records`;
 
       const params = new URLSearchParams({
-        where: `codeinseecommune='${INSEE_ANTONY}' AND codefiliere like 'SOLAI' AND codetechnologie like 'PHOTV'`,
+        where: [
+          `codeinseecommune='${INSEE_ANTONY}'`,
+          "codefiliere like 'SOLAI'",
+          "codetechnologie like 'PHOTV'",
+        ].join(" AND "),
         select: [
           "codeiris as codeiris",
           // As we just multiply the capacity by the irradiance to estimate the
@@ -296,7 +325,7 @@
           // So we fundamentally aren't estimating the amount sent to the grid,
           // which is why it makes no sense to use the capacity attached to the
           // grid.
-          "sum(puismaxinstallee) as puis_ins_kw"
+          "sum(puismaxinstallee) as puis_ins_kw",
         ].join(", "),
         group_by: "codeiris",
         limit: "100",
@@ -315,7 +344,7 @@
 
       return {
         totalKw,
-        perIris: rows,  // reserved for future by-quartier curves
+        perIris: rows, // reserved for future by-quartier curves
       };
     }
 
@@ -330,14 +359,14 @@
         timezone: "Europe/Paris",
         time_resolution: "native",
         past_hours: String(pastHours),
-        forecast_hours: "0"
+        forecast_hours: "0",
       });
 
       const url = `${OPEN_METEO_BASE}?${params.toString()}`;
       const json = await fetchJson(url);
 
-      const times = json.hourly.time;
-      const gti = json.hourly.global_tilted_irradiance;
+      const times = json.hourly?.time || [];
+      const gti = json.hourly?.global_tilted_irradiance || [];
 
       const out = [];
       for (let i = 0; i < times.length; i++) {
@@ -361,16 +390,14 @@
       for (const yr of years) {
         const rows = dataByYear[yr] || [];
         for (const row of rows) {
-          // row.codeiris may be null
-          const code = row.codeiris === null ? "NULL" : row.codeiris;
-          codes.add(code);
+          codes.add(row.codeiris);
         }
       }
-      // Convert to array, but keep "NULL" (Quartier Inconnu) first, others sorted
+      // Convert to array, null first, others sorted
       const arr = Array.from(codes);
       arr.sort((a, b) => {
-        if (a === "NULL") return -1;
-        if (b === "NULL") return 1;
+        if (a === null) return -1;
+        if (b === null) return 1;
         return a.localeCompare(b);
       });
       irisList = arr;
@@ -384,7 +411,7 @@
     }
 
     function computePowerSeriesKw(irrSeries, totalKw) {
-      return irrSeries.map(pt => {
+      return irrSeries.map((pt) => {
         const frac = pt.gti_w_per_m2 / 1000.0; // 1000 W/m² ~ full power
         const pKw = CALIB_K * totalKw * frac;
         return {
@@ -409,12 +436,13 @@
         });
 
         return {
-          datasets: [{
-            label: "Total Antony",
-            data: values,
-            stack: "stack1",
-            backgroundColor: undefined,
-          }],
+          datasets: [
+            {
+              label: "Total Antony",
+              data: values,
+              stack: "stack1",
+            },
+          ],
           metricLabel: metricDef.label,
           metricUnit: metricDef.unit,
         };
@@ -424,21 +452,17 @@
       const datasets = [];
 
       irisList.forEach((code) => {
-        const isNull = (code === "NULL");
-        const rawCode = isNull ? null : code;
-
         const values = years.map((yr) => {
           const rows = dataByYear[yr] || [];
-          const row = rows.find(r => (r.codeiris === rawCode));
+          const row = rows.find((r) => r.codeiris === code);
           if (!row) return 0;
           return getValue(row, metricKey);
         });
 
         datasets.push({
-          label: irisDisplayName(rawCode),
+          label: irisDisplayName(code),
           data: values,
           stack: "stack1",
-          backgroundColor: undefined,
         });
       });
 
@@ -447,7 +471,7 @@
 
     function buildRealtimeDatasets(mode) {
       // Common x-axis labels: timestamps from irradiance series
-      const labels = rtIrrSeries.map(p => p.time);
+      const labels = rtIrrSeries.map((p) => p.time);
 
       // Safety: if we don't have data yet, return empty
       if (!labels.length) {
@@ -457,7 +481,7 @@
       // Mode "total": one line for Antony as a whole
       if (mode === "total") {
         const totalSeries = computePowerSeriesKw(rtIrrSeries, rtCapTotalKw);
-        const data = totalSeries.map(p => p.power_kw);
+        const data = totalSeries.map((p) => p.power_kw);
 
         return {
           labels,
@@ -486,7 +510,7 @@
         const codeiris = row.codeiris === undefined ? null : row.codeiris;
         const name = irisDisplayName(codeiris);
 
-        const data = rtIrrSeries.map(pt => {
+        const data = rtIrrSeries.map((pt) => {
           const frac = pt.gti_w_per_m2 / 1000.0; // 1000 W/m² ≈ full power
           return CALIB_K * capKw * frac;
         });
@@ -509,24 +533,27 @@
     function createOrUpdateHistChart(metricKey) {
       const ctx = document.getElementById("solarChart").getContext("2d");
       const modeSelect = document.getElementById("mode-select");
-      const mode = modeSelect ? modeSelect.value : "iris";  // default
+      const mode = modeSelect ? modeSelect.value : "iris"; // default
 
-      const { datasets, metricLabel, metricUnit } = buildHistDatasets(metricKey, mode);
+      const { datasets, metricLabel, metricUnit } = buildHistDatasets(
+        metricKey,
+        mode,
+      );
       const yLabel = metricUnit ? `${metricLabel} (${metricUnit})` : metricLabel;
-      const stacked = (mode === "iris");
+      const stacked = mode === "iris";
 
-      if (hchart) {
-        hchart.data.labels = years;
-        hchart.data.datasets = datasets;
-        hchart.options.plugins.title.text = metricLabel;
-        hchart.options.scales.y.title.text = yLabel;
-        hchart.options.scales.x.stacked = stacked;
-        hchart.options.scales.y.stacked = stacked;
-        hchart.update();
+      if (histChart) {
+        histChart.data.labels = years;
+        histChart.data.datasets = datasets;
+        histChart.options.plugins.title.text = metricLabel;
+        histChart.options.scales.y.title.text = yLabel;
+        histChart.options.scales.x.stacked = stacked;
+        histChart.options.scales.y.stacked = stacked;
+        histChart.update();
         return;
       }
 
-      hchart = new Chart(ctx, {
+      histChart = new Chart(ctx, {
         type: "bar",
         data: {
           labels: years,
@@ -576,11 +603,12 @@
 
       const { labels, datasets } = buildRealtimeDatasets(mode);
       const yLabel = "Puissance photovoltaïque (kW)";
-      const stacked = (mode === "iris");
+      const stacked = mode === "iris";
 
       if (rtChart) {
         rtChart.data.labels = labels;
         rtChart.data.datasets = datasets;
+        rtChart.options.scales.x.stacked = stacked;
         rtChart.options.scales.y.stacked = stacked;
         rtChart.update();
         return;
@@ -620,7 +648,7 @@
             x: {
               type: "category",
               ticks: {
-                callback: function (value, index, ticks) {
+                callback: function (value, index) {
                   const label = labels[index];
                   const t = label.split("T")[1] || label;
                   return t.slice(0, 5); // "HH:MM"
@@ -653,9 +681,11 @@
 
     async function initHist() {
       try {
-        setStatus("Recherche des années disponibles…");
+        setHistStatus("Recherche des années disponibles…");
         years = await findAvailableYears();
-        setStatus(`Années disponibles : ${years.join(", ")}. Chargement des données d'Antony…`);
+        setHistStatus(
+          `Années disponibles : ${years.join(", ")}. Chargement des données d'Antony…`,
+        );
 
         // Fetch Antony data for each year
         for (const year of years) {
@@ -664,7 +694,9 @@
         }
 
         computeIrisList();
-        setStatus("Données chargées. Vous pouvez changer la métrique avec le menu déroulant.");
+        setHistStatus(
+          "Données chargées. Vous pouvez changer la métrique avec le menu déroulant.",
+        );
 
         const metricSelect = document.getElementById("metric-select");
         const modeSelect = document.getElementById("mode-select");
@@ -679,10 +711,8 @@
         modeSelect.addEventListener("change", () => {
           createOrUpdateHistChart(metricSelect.value);
         });
-
       } catch (err) {
-        console.error(err);
-        setStatus("Erreur lors du chargement des données : " + err.message);
+        showHistError("Erreur lors du chargement des données", err);
       }
     }
 
@@ -692,7 +722,9 @@
 
         const cap = await fetchAntonyCurrentInstalledCapacityKw();
         if (cap.totalKw <= 0) {
-          setRealtimeStatus("Puissance PV totale nulle ou indisponible pour Antony.");
+          setRealtimeStatus(
+            "Puissance PV totale nulle ou indisponible pour Antony.",
+          );
           return;
         }
 
@@ -700,11 +732,14 @@
         rtCapTotalKw = cap.totalKw;
         rtCapPerIris = cap.perIris || [];
 
-        await fetchIrradianceAndUpdate()
+        await fetchIrradianceAndUpdate();
 
+        // The irradiance data is updated once per hour.  We poll more often
+        // than that (every RT_REFRESH_MINUTES minutes) to ensure we notice
+        // the new data swiftly, but the graph will only update once per hour.
         setRealtimeStatus(
           `Puissance photovoltaïque totale : ${rtCapTotalKw.toFixed(1)} kW. ` +
-          `Courbe mise à jour une fois par heure.`
+            `Courbe mise à jour une fois par heure.`,
         );
 
         // React to realtime mode toggle (total vs IRIS)
@@ -718,16 +753,13 @@
         // Periodic refresh
         setInterval(async () => {
           try {
-            await fetchIrradianceAndUpdate()
+            await fetchIrradianceAndUpdate();
           } catch (e) {
-            console.error(e);
-            setRealtimeStatus("Erreur lors de la mise à jour : " + e.message);
+            showRealtimeError("Erreur lors de la mise à jour", e);
           }
         }, RT_REFRESH_INTERVAL_MS);
-
       } catch (err) {
-        console.error(err);
-        setRealtimeStatus("Erreur lors du chargement des données temps réel : " + err.message);
+        showRealtimeError("Erreur lors du chargement des données temps réel", err);
       }
     }
 
@@ -743,10 +775,9 @@
       }
 
       try {
-        await fetchIrradianceAndUpdate()
+        await fetchIrradianceAndUpdate();
       } catch (e) {
-        console.error(e);
-        setRealtimeStatus("Erreur lors de la mise à jour : " + e.message);
+        showRealtimeError("Erreur lors de la mise à jour", e);
       }
     }
 
@@ -763,7 +794,7 @@
 
     // Run both widgets on page load
     window.addEventListener("DOMContentLoaded", () => {
-      initHist();     // historical ODRE widget (bars)
+      initHist(); // historical ODRE widget (bars)
       initRealtime(); // irradiance-based real-time widget (line)
     });
   </script>

@@ -157,6 +157,7 @@
 
     const RT_PAST_HOURS = 24;           // look back this many hours
     const RT_REFRESH_MINUTES = 17;      // how often we refresh the curve
+    const RT_REFRESH_INTERVAL_MS = RT_REFRESH_MINUTES * 60 * 1000
 
     // ------------
     // State
@@ -170,6 +171,7 @@
     let rtIrrSeries = [];    // [{ time, gti_w_per_m2 }, ...]
     let rtCapTotalKw = 0;    // total installed PV capacity (kW)
     let rtCapPerIris = [];   // [{ codeiris, puis_ins_kw }, ...]
+    let lastRtFetchTime = 0; // timestamp (ms) of last successful real-time fetch
     let rtChart = null;      // Chart.js instance for real-time widget
 
     // ------------
@@ -638,6 +640,13 @@
       });
     }
 
+    async function fetchIrradianceAndUpdate() {
+      const irr = await fetchIrradianceSeries(ANT_LAT, ANT_LON, RT_PAST_HOURS);
+      lastRtFetchTime = Date.now();
+      rtIrrSeries = irr;
+      createOrUpdateRealtimeChart();
+    }
+
     // ------------
     // Main init
     // ------------
@@ -691,10 +700,8 @@
         rtCapTotalKw = cap.totalKw;
         rtCapPerIris = cap.perIris || [];
 
-        const irr = await fetchIrradianceSeries(ANT_LAT, ANT_LON, RT_PAST_HOURS);
-        rtIrrSeries = irr;
+        await fetchIrradianceAndUpdate()
 
-        createOrUpdateRealtimeChart();
         setRealtimeStatus(
           `Puissance photovoltaïque totale : ${rtCapTotalKw.toFixed(1)} kW. ` +
           `Courbe mise à jour une fois par heure.`
@@ -711,20 +718,48 @@
         // Periodic refresh
         setInterval(async () => {
           try {
-            const irrNew = await fetchIrradianceSeries(ANT_LAT, ANT_LON, RT_PAST_HOURS);
-            rtIrrSeries = irrNew;
-            createOrUpdateRealtimeChart();
+            await fetchIrradianceAndUpdate()
           } catch (e) {
             console.error(e);
-            setRealtimeStatus("Erreur lors de la mise à jour temps réel : " + e.message);
+            setRealtimeStatus("Erreur lors de la mise à jour : " + e.message);
           }
-        }, RT_REFRESH_MINUTES * 60 * 1000);
+        }, RT_REFRESH_INTERVAL_MS);
 
       } catch (err) {
         console.error(err);
         setRealtimeStatus("Erreur lors du chargement des données temps réel : " + err.message);
       }
     }
+
+    async function maybeRefreshRealtimeNow() {
+      // Bail out if never fetched.
+      if (lastRtFetchTime <= 0) {
+        return;
+      }
+
+      // If data is still "fresh enough", skip
+      if (Date.now() - lastRtFetchTime < RT_REFRESH_INTERVAL_MS * 0.9) {
+        return;
+      }
+
+      try {
+        await fetchIrradianceAndUpdate()
+      } catch (e) {
+        console.error(e);
+        setRealtimeStatus("Erreur lors de la mise à jour : " + e.message);
+      }
+    }
+
+    // When the tab becomes visible/focused again, catch up if needed
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) {
+        maybeRefreshRealtimeNow();
+      }
+    });
+
+    window.addEventListener("focus", () => {
+      maybeRefreshRealtimeNow();
+    });
 
     // Run both widgets on page load
     window.addEventListener("DOMContentLoaded", () => {

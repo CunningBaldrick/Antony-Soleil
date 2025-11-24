@@ -171,7 +171,6 @@
     let rtIrrSeries = null; // [{ time, gti_w_per_m2 }, ...]
     let rtCapTotalKw = 0; // total installed PV capacity (kW)
     let rtCapPerIris = []; // [{ codeiris, puis_ins_kw }, ...]
-    let lastRtFetchTime = 0; // timestamp (ms) of last successful real-time fetch
     let rtChart = null; // Chart.js instance for real-time widget
 
     // ------------
@@ -225,7 +224,10 @@
     // ------------
 
     async function fetchJson(url) {
-      const res = await fetch(url);
+      // Disable caching in order to force a real network request each time,
+      // otherwise we may get the same cached Open-Meteo real-time data for
+      // every request, rather than the latest data.
+      const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status} for ${url}`);
       }
@@ -649,7 +651,12 @@
               type: "category",
               ticks: {
                 callback: function (value, index) {
-                  const label = labels[index];
+                  // Always use the chart's current labels
+                  const allLabels = this.chart.data.labels || [];
+                  const label = allLabels[index] || "";
+
+                  if (!label) return "";
+
                   const t = label.split("T")[1] || label;
                   return t.slice(0, 5); // "HH:MM"
                 },
@@ -670,31 +677,9 @@
 
     async function fetchIrradianceAndUpdate() {
       const irr = await fetchIrradianceSeries(ANT_LAT, ANT_LON, RT_PAST_HOURS);
-      lastRtFetchTime = Date.now();
       if (irr != rtIrrSeries) {
         rtIrrSeries = irr;
         createOrUpdateRealtimeChart();
-      }
-    }
-
-    async function maybeRefreshRealtimeNow() {
-      // Refresh the real-time widget if more than RT_REFRESH_MINUTES has
-      // passed since the last refresh.
-
-      // Bail out if never fetched.
-      if (lastRtFetchTime <= 0) {
-        return;
-      }
-
-      // Bail out if RT_REFRESH_MINUTES minutes haven't passed yet.
-      if (Date.now() - lastRtFetchTime < RT_REFRESH_INTERVAL_MS) {
-        return;
-      }
-
-      try {
-        await fetchIrradianceAndUpdate();
-      } catch (e) {
-        showRealtimeError("Erreur lors de la mise à jour", e);
       }
     }
 
@@ -773,14 +758,13 @@
           });
         }
 
-        // Periodic refresh.  We do this every minute to improve responsiveness
-        // if we are put into the background for a long time, disabling timers,
-        // then come back to the foreground: within one minute, we will notice
-        // that more than RT_REFRESH_MINUTES have passed since the last refresh,
-        // and update the graph.
         setInterval(async () => {
-          await maybeRefreshRealtimeNow();
-        }, 60*1000); // Once per minute
+          try {
+            await fetchIrradianceAndUpdate();
+          } catch (e) {
+            showRealtimeError("Erreur lors de la mise à jour", e);
+          }
+        }, RT_REFRESH_INTERVAL_MS);
       } catch (err) {
         showRealtimeError("Erreur lors du chargement des données temps réel", err);
       }

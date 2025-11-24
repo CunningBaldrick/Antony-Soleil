@@ -81,41 +81,6 @@ def get_antony_capacity_and_energy_year(year: int) -> tuple[float, float]:
     e_kwh = float(row["e_kwh"]) if row["e_kwh"] is not None else 0.0
     return cap_kw, e_kwh
 
-def get_annual_irradiance_kwh_per_kwp(year: int) -> float:
-    """
-    Call Open-Meteo to get hourly global_tilted_irradiance for the entire year.
-    Convert to annual "H" in kWh per kWp (sum(G/1000) over hours).
-    """
-    params = {
-        "latitude": ANT_LAT,
-        "longitude": ANT_LON,
-        "hourly": "global_tilted_irradiance",
-        "tilt": PANEL_TILT_DEG,
-        "azimuth": PANEL_AZIMUTH_DEG,
-        "timeformat": "iso8601",
-        "timezone": "Europe/Paris",
-        "time_resolution": "native",
-        "start_date": f"{year}-01-01",
-        "end_date": f"{year}-12-31",
-        "forecast_hours": "0",
-    }
-
-    data = fetch_json(OPEN_METEO_BASE, params)
-    hourly = data.get("hourly", {})
-    gti = hourly.get("global_tilted_irradiance", [])
-    if not gti:
-        raise RuntimeError(f"No irradiance data from Open-Meteo for year {year}")
-
-    total_kwh_per_kwp = 0.0
-    for v in gti:
-        if v is None:
-            continue
-        # Hourly step; G in W/m². 1 kWp ~ 1000 W/m².
-        # So energy contribution per kWp for that hour = G/1000 kWh.
-        total_kwh_per_kwp += v / 1000.0
-
-    return total_kwh_per_kwp
-
 def get_annual_irradiance_series(year: int) -> list[float]:
     """
     Return list of hourly global_tilted_irradiance values (W/m²) for the full year.
@@ -140,6 +105,23 @@ def get_annual_irradiance_series(year: int) -> list[float]:
     if not gti:
         raise RuntimeError(f"No irradiance data for year {year}")
     return gti
+
+def get_annual_irradiance_kwh_per_kwp(year: int) -> float:
+    """
+    Call Open-Meteo to get hourly global_tilted_irradiance for the entire year.
+    Convert to annual "H" in kWh per kWp (sum(G/1000) over hours).
+    """
+    gti = get_annual_irradiance_series(year)
+
+    total_kwh_per_kwp = 0.0
+    for v in gti:
+        if v is None:
+            continue
+        # Hourly step; G in W/m². 1 kWp ~ 1000 W/m².
+        # So energy contribution per kWp for that hour = G/1000 kWh.
+        total_kwh_per_kwp += v / 1000.0
+
+    return total_kwh_per_kwp
 
 # -------------------------
 # Main calibration logic

@@ -170,6 +170,7 @@
 
     let rtIrrSeries = null; // [{ time, gti_w_per_m2 }, ...]
     let rtCapTotalKw = 0; // total installed PV capacity (kW)
+    let rtCapTotalNb = 0; // total installed installations count
     let rtCapPerIris = []; // [{ codeiris, puis_ins_kw }, ...]
     let rtChart = null; // Chart.js instance for real-time widget
 
@@ -328,6 +329,7 @@
           // which is why it makes no sense to use the capacity attached to the
           // grid.
           "sum(puismaxinstallee) as puis_ins_kw",
+          "sum(nbinstallations) as nb_inst",
         ].join(", "),
         group_by: "codeiris",
         limit: "100",
@@ -338,14 +340,19 @@
       const rows = json.results || [];
 
       let totalKw = 0;
+      let totalNb = 0;
       for (const row of rows) {
         const v = Number(row.puis_ins_kw) || 0;
+        const n = Number(row.nb_inst) || 0;
         row.puis_ins_kw = v;
+        row.nb_inst = n;
         totalKw += v;
+        totalNb += n;
       }
 
       return {
         totalKw,
+        totalNb,
         perIris: rows, // reserved for future by-quartier curves
       };
     }
@@ -489,7 +496,7 @@
           labels,
           datasets: [
             {
-              label: "Puissance estimée totale",
+              label: "Puissance produite totale",
               data,
               borderWidth: 2,
               tension: 0.2,
@@ -604,7 +611,7 @@
       const mode = modeSelect ? modeSelect.value : "total";
 
       const { labels, datasets } = buildRealtimeDatasets(mode);
-      const yLabel = "Puissance photovoltaïque (kW)";
+      const yLabel = "Puissance (kW)";
       const stacked = mode === "iris";
 
       if (rtChart) {
@@ -738,6 +745,7 @@
 
         // Save capacity info for realtime chart (total + par quartier)
         rtCapTotalKw = cap.totalKw;
+        rtCapTotalNb = cap.totalNb;
         rtCapPerIris = cap.perIris || [];
 
         await fetchIrradianceAndUpdate();
@@ -746,7 +754,7 @@
         // than that (every RT_REFRESH_MINUTES minutes) to ensure we notice
         // the new data swiftly, but the graph will only update once per hour.
         setRealtimeStatus(
-          `Puissance photovoltaïque totale : ${rtCapTotalKw.toFixed(1)} kW. ` +
+          `Capacité photovoltaïque installée : ${rtCapTotalKw.toFixed(1)} kW crête (${rtCapTotalNb} installations). ` +
             `Courbe mise à jour une fois par heure.`,
         );
 

@@ -79,6 +79,13 @@
         <option value="iris">Par quartier (empilé)</option>
       </select>
     </div>
+
+    <div>
+      <label>
+        <input type="checkbox" id="rt-forecast-toggle" checked />
+        Afficher la prévision (24 h)
+      </label>
+    </div>
   </div>
 
   <div id="rt-status" class="status">Chargement de l'irradiance…</div>
@@ -156,6 +163,7 @@
     const CALIB_K = 0.52; // calibration factor, see calibrate.py
 
     const RT_PAST_HOURS = 24; // look back this many hours
+    const RT_FORECAST_HOURS = 24; // look ahead this many hours
     const RT_REFRESH_MINUTES = 17; // how often we refresh the curve
     const RT_REFRESH_INTERVAL_MS = RT_REFRESH_MINUTES * 60 * 1000;
 
@@ -168,7 +176,8 @@
     let irisList = []; // distinct IRIS codes
     let histChart = null; // Chart.js instance for historical widget
 
-    let rtIrrSeries = null; // [{ time, gti_w_per_m2 }, ...]
+    let rtIrrPastSeries = [];     // [{ time, gti_w_per_m2 }, ...]  (observed)
+    let rtIrrForecastSeries = []; // [{ time, gti_w_per_m2 }, ...]  (forecast)
     let rtCapTotalKw = 0; // total installed PV capacity (kW)
     let rtCapTotalNb = 0; // total installed installations count
     let rtCapPerIris = []; // [{ codeiris, puis_ins_kw }, ...]
@@ -357,7 +366,7 @@
       };
     }
 
-    async function fetchIrradianceSeries(lat, lon, pastHours) {
+    async function fetchIrradianceSeries(lat, lon, pastHours, forecastHours) {
       const params = new URLSearchParams({
         latitude: String(lat),
         longitude: String(lon),
@@ -368,7 +377,7 @@
         timezone: "Europe/Paris",
         time_resolution: "native",
         past_hours: String(pastHours),
-        forecast_hours: "0",
+        forecast_hours: String(forecastHours),
       });
 
       const url = `${OPEN_METEO_BASE}?${params.toString()}`;
@@ -377,17 +386,43 @@
       const times = json.hourly?.time || [];
       const gti = json.hourly?.global_tilted_irradiance || [];
 
-      const out = [];
-      for (let i = 0; i < times.length; i++) {
+      if (times.length !== gti.length) {
+        console.warn(
+          "Open-Meteo: nombre de timestamps différent du nombre de valeurs irradiance :",
+          "times =", times.length,
+          "gti =", gti.length,
+        );
+      }
+
+      const expectedTotal = pastHours + forecastHours;
+      if (times.length !== expectedTotal) {
+        console.warn(
+          "Open-Meteo: longueur inattendue de la série irradiance :",
+          "attendu =", expectedTotal,
+          "reçu =", times.length,
+        );
+      }
+
+      const totalToUse = Math.min(expectedTotal, times.length, gti.length);
+      const splitIndex = Math.min(pastHours, totalToUse);
+
+      const past = [];
+      const forecast = [];
+
+      for (let i = 0; i < totalToUse; i++) {
+        const tIso = times[i];
         const v = gti[i];
-        if (v != null) {
-          out.push({
-            time: times[i],
-            gti_w_per_m2: v,
-          });
+
+        const point = v == null ? null : { time: tIso, gti_w_per_m2: v };
+
+        if (i < splitIndex) {
+          if (point) past.push(point);
+        } else {
+          if (point) forecast.push(point);
         }
       }
-      return out;
+
+      return { past, forecast };
     }
 
     // ------------
@@ -478,39 +513,109 @@
       return { datasets, metricLabel: metricDef.label, metricUnit: metricDef.unit };
     }
 
-    function buildRealtimeDatasets(mode) {
-      // Common x-axis labels: timestamps from irradiance series
-      const labels = rtIrrSeries.map((p) => p.time);
+    function buildRealtimeDatasets(mode, showForecast) {
+      const past = rtIrrPastSeries || [];
+      const forecast = rtIrrForecastSeries || [];
 
-      // Safety: if we don't have data yet, return empty
-      if (!labels.length) {
+      if (!past.length && !forecast.length) {
         return { labels: [], datasets: [] };
       }
 
-      // Mode "total": one line for Antony as a whole
+      let labels = [];
+      const pastTimes = past.map((p) => p.time);
+      const forecastTimes = forecast.map((p) => p.time);
+
+      if (showForecast && forecastTimes.length) {
+        labels = pastTimes.concat(forecastTimes);
+      } else {
+        labels = pastTimes;
+      }
+
+      // --- TOTAL MODE ---
       if (mode === "total") {
-        const totalSeries = computePowerSeriesKw(rtIrrSeries, rtCapTotalKw);
-        const data = totalSeries.map((p) => p.power_kw);
+        const pastSeries = computePowerSeriesKw(past, rtCapTotalKw);
+        const pastData = pastSeries.map((p) => p.power_kw);
+
+        if (!showForecast || !forecast.length) {
+          return {
+            labels,
+            datasets: [
+              {
+                label: "Puissance produite totale",
+                data: pastData,
+                borderWidth: 2,
+                tension: 0.2,
+                pointRadius: 0,
+                pointHitRadius: 10,
+                fill: true,
+                stack: "rt-total",
+              },
+            ],
+          };
+        }
+
+        const forecastSeries = computePowerSeriesKw(
+          forecast,
+          rtCapTotalKw,
+        );
+        const forecastData = forecastSeries.map((p) => p.power_kw);
+
+        const nPast = pastData.length;
+        const nForecast = forecastData.length;
+
+        // Blue: real data, then nulls
+        const pastDataPadded = pastData.concat(
+          new Array(nForecast).fill(null),
+        );
+
+        // Red: start exactly at the last past point,
+        // then continue with the forecast
+        let forecastDataPadded;
+        if (nPast > 0) {
+          const lastPast = pastData[nPast - 1];
+          forecastDataPadded = new Array(nPast - 1)
+            .fill(null)
+            .concat([lastPast])
+            .concat(forecastData);
+        } else {
+          // No past data at all – just show the forecast
+          forecastDataPadded = forecastData.slice();
+        }
 
         return {
           labels,
           datasets: [
             {
-              label: "Puissance produite totale",
-              data,
+              label: "Puissance produite totale (observée)",
+              data: pastDataPadded,
               borderWidth: 2,
               tension: 0.2,
               pointRadius: 0,
               pointHitRadius: 10,
               fill: true,
               stack: "rt-total",
+              showInLegend: true,
+            },
+            {
+              label: "Prévision (24 h)",
+              data: forecastDataPadded,
+              borderWidth: 2,
+              borderDash: [5, 5],
+              tension: 0.2,
+              pointRadius: 0,
+              pointHitRadius: 10,
+              fill: true,
+              stack: "rt-total",
+              showInLegend: true,
             },
           ],
         };
       }
 
-      // Mode "iris": one stacked area per quartier
+      // --- IRIS MODE: one stacked area per quartier ---
       const datasets = [];
+      const nPast = pastTimes.length;
+      const nForecast = forecastTimes.length;
 
       for (const row of rtCapPerIris || []) {
         const capKw = Number(row.puis_ins_kw) || 0;
@@ -519,20 +624,73 @@
         const codeiris = row.codeiris === undefined ? null : row.codeiris;
         const name = irisDisplayName(codeiris);
 
-        const data = rtIrrSeries.map((pt) => {
-          const frac = pt.gti_w_per_m2 / 1000.0; // 1000 W/m² ≈ full power
+        // Observed part
+        const pastData = past.map((pt) => {
+          const frac = pt.gti_w_per_m2 / 1000.0;
           return CALIB_K * capKw * frac;
         });
 
+        if (!showForecast || !forecast.length) {
+          datasets.push({
+            label: name,
+            data: pastData,
+            borderWidth: 1,
+            tension: 0.2,
+            pointRadius: 0,
+            pointHitRadius: 10,
+            fill: true,
+            stack: "rt-iris",
+            showInLegend: true,
+          });
+          continue;
+        }
+
+        // Forecast part
+        const forecastData = forecast.map((pt) => {
+          const frac = pt.gti_w_per_m2 / 1000.0;
+          return CALIB_K * capKw * frac;
+        });
+
+        const pastDataPadded = pastData.concat(
+          new Array(nForecast).fill(null),
+        );
+
+        let forecastDataPadded;
+        const nPastLocal = pastData.length;
+
+        if (nPastLocal > 0) {
+          const lastPast = pastData[nPastLocal - 1];
+          forecastDataPadded = new Array(nPastLocal - 1)
+            .fill(null)
+            .concat([lastPast])
+            .concat(forecastData);
+        } else {
+          forecastDataPadded = forecastData.slice();
+        }
+
         datasets.push({
-          label: name,
-          data,
+          label: `${name} (observé)`,
+          data: pastDataPadded,
           borderWidth: 1,
           tension: 0.2,
           pointRadius: 0,
           pointHitRadius: 10,
           fill: true,
           stack: "rt-iris",
+          showInLegend: true,
+        });
+
+        datasets.push({
+          label: `${name} (prévision)`,
+          data: forecastDataPadded,
+          borderWidth: 1,
+          borderDash: [5, 5],
+          tension: 0.2,
+          pointRadius: 0,
+          pointHitRadius: 10,
+          fill: true,
+          stack: "rt-iris",
+          showInLegend: false, // hidden in legend to avoid clutter
         });
       }
 
@@ -610,7 +768,10 @@
       const modeSelect = document.getElementById("rt-mode-select");
       const mode = modeSelect ? modeSelect.value : "total";
 
-      const { labels, datasets } = buildRealtimeDatasets(mode);
+      const forecastToggle = document.getElementById("rt-forecast-toggle");
+      const showForecast = forecastToggle ? forecastToggle.checked : false;
+
+      const { labels, datasets } = buildRealtimeDatasets(mode, showForecast);
       const yLabel = "Puissance (kW)";
       const stacked = mode === "iris";
 
@@ -652,18 +813,29 @@
                 },
               },
             },
+            legend: {
+              labels: {
+                // Only show datasets that explicitly want to appear
+                filter: function (item, data) {
+                  const datasets = (data && data.datasets) || [];
+                  const ds = datasets[item.datasetIndex];
+
+                  if (!ds) return true;
+                  if (ds.showInLegend === false) return false;
+                  return true;
+                },
+              },
+            },
           },
           scales: {
             x: {
               type: "category",
+              stacked: stacked,
               ticks: {
                 callback: function (value, index) {
-                  // Always use the chart's current labels
                   const allLabels = this.chart.data.labels || [];
                   const label = allLabels[index] || "";
-
                   if (!label) return "";
-
                   const t = label.split("T")[1] || label;
                   return t.slice(0, 5); // "HH:MM"
                 },
@@ -683,11 +855,17 @@
     }
 
     async function fetchIrradianceAndUpdate() {
-      const irr = await fetchIrradianceSeries(ANT_LAT, ANT_LON, RT_PAST_HOURS);
-      if (irr != rtIrrSeries) {
-        rtIrrSeries = irr;
-        createOrUpdateRealtimeChart();
-      }
+      const { past, forecast } = await fetchIrradianceSeries(
+        ANT_LAT,
+        ANT_LON,
+        RT_PAST_HOURS,
+        RT_FORECAST_HOURS
+      );
+
+      rtIrrPastSeries = past;
+      rtIrrForecastSeries = forecast;
+
+      createOrUpdateRealtimeChart();
     }
 
     // ------------
@@ -762,6 +940,14 @@
         const rtModeSelect = document.getElementById("rt-mode-select");
         if (rtModeSelect) {
           rtModeSelect.addEventListener("change", () => {
+            createOrUpdateRealtimeChart();
+          });
+        }
+
+        // React to forecast toggle
+        const rtForecastToggle = document.getElementById("rt-forecast-toggle");
+        if (rtForecastToggle) {
+          rtForecastToggle.addEventListener("change", () => {
             createOrUpdateRealtimeChart();
           });
         }

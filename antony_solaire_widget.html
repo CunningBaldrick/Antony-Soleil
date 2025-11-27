@@ -866,6 +866,16 @@
       rtIrrForecastSeries = forecast;
 
       createOrUpdateRealtimeChart();
+
+      // Let the user know that everything is OK, replacing any previous failure
+      // status, eg due to a network outage.
+      // NOTE: The irradiance data is updated once per hour.  We poll more often
+      // than that (every RT_REFRESH_MINUTES minutes) to ensure we notice any
+      // new data swiftly, but the graph itself will only update once per hour.
+      setRealtimeStatus(
+        `Capacité photovoltaïque installée : ${rtCapTotalKw.toFixed(1)} kW crête (${rtCapTotalNb} installations). ` +
+          `Courbe mise à jour une fois par heure.`,
+      );
     }
 
     // ------------
@@ -927,14 +937,6 @@
         rtCapPerIris = cap.perIris || [];
 
         await fetchIrradianceAndUpdate();
-
-        // The irradiance data is updated once per hour.  We poll more often
-        // than that (every RT_REFRESH_MINUTES minutes) to ensure we notice
-        // the new data swiftly, but the graph will only update once per hour.
-        setRealtimeStatus(
-          `Capacité photovoltaïque installée : ${rtCapTotalKw.toFixed(1)} kW crête (${rtCapTotalNb} installations). ` +
-            `Courbe mise à jour une fois par heure.`,
-        );
 
         // React to realtime mode toggle (total vs IRIS)
         const rtModeSelect = document.getElementById("rt-mode-select");

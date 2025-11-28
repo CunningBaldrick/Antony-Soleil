@@ -44,18 +44,17 @@ def fetch_antony_iris():
 
         iris_code = fields.get("iris_code")  # 9-digit IRIS code
         iris_name = fields.get("iris_name")  # official IRIS name
-        com_name = fields.get("com_name", "Antony")
 
         if not iris_code:
             continue
 
         # Short human-readable name
         if iris_name:
-            nice_name = f"{com_name} - {iris_name}"
+            nice_name = f"{iris_name}"
         else:
             # Fallback: unlikely, but just in case iris_name is missing
             suffix = iris_code[-3:] if len(iris_code) >= 3 else iris_code
-            nice_name = f"{com_name} - IRIS {suffix}"
+            nice_name = f"IRIS {suffix}"
 
         results.append(
             {

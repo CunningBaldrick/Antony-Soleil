@@ -41,6 +41,30 @@
       max-width: 100%;
       margin-top: 1rem;
     }
+    button {
+      padding: 0.28rem 0.6rem;
+      font-size: 0.95rem;
+      border-radius: 0.5rem;
+      border: 1px solid #ccc;
+      background: #fafafa;
+      cursor: pointer;
+    }
+    button:hover { background: #f2f2f2; }
+    .rt-array-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.45rem 0.6rem;
+      border: 1px solid #e6e6e6;
+      border-radius: 0.75rem;
+      background: #fff;
+    }
+    .rt-array-row input[type="number"] {
+      width: 4rem;
+      margin-left: 0.25rem;
+    }
+    .rt-array-name { width: 9rem; }
   </style>
 </head>
 <body>
@@ -48,8 +72,8 @@
 
   <div class="controls">
     <div>
-      <label for="metric-select">Afficher :</label>
-      <select id="metric-select">
+      <label for="h-metric-select">Afficher :</label>
+      <select id="h-metric-select">
         <option value="prod_an_kwh">Production annuelle</option>
         <option value="puis_rac_kw">Puissance installée</option>
         <option value="nb_inst">Nombre d'installations</option>
@@ -57,9 +81,9 @@
     </div>
 
     <div>
-      <label for="mode-select">Découpage :</label>
-      <select id="mode-select">
-        <option value="iris">Par quartier (empilé)</option>
+      <label for="h-mode-select">Découpage :</label>
+      <select id="h-mode-select">
+        <option value="iris">Par quartier</option>
         <option value="total">Total Antony</option>
       </select>
     </div>
@@ -67,16 +91,17 @@
 
   <div id="h-status" class="status">Chargement des données…</div>
 
-  <canvas id="solarChart" width="800" height="400"></canvas>
+  <canvas id="historyChart" width="800" height="400"></canvas>
 
   <h2>Antony – production photovoltaïque en temps quasi réel</h2>
 
   <div class="controls">
     <div>
-      <label for="rt-mode-select">Découpage :</label>
+      <label for="rt-mode-select">Affichage :</label>
       <select id="rt-mode-select">
         <option value="total">Total Antony</option>
-        <option value="iris">Par quartier (empilé)</option>
+        <option value="iris">Par quartier</option>
+        <option value="personal">Mon installation</option>
       </select>
     </div>
 
@@ -86,591 +111,692 @@
         Afficher la prévision (24 h)
       </label>
     </div>
+
+    <div id="rt-personal-controls" style="display:none; gap: 0.75rem; flex-wrap: wrap;">
+      <span style="font-weight:600;">Paramètres personnels :</span>
+
+      <div style="display:flex; flex-direction:column; gap:0.6rem; width:100%;">
+        <div id="rt-arrays" style="display:flex; flex-direction:column; gap:0.6rem; width:100%;"></div>
+        <div style="display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap;">
+          <button type="button" id="rt-add-array">+ Ajouter un champ</button>
+          <span style="font-size:0.9rem; color:#555;">
+            Astuce : mettez par ex. 2 champs (Est / Ouest) pour visualiser l'empilement.
+          </span>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div id="rt-status" class="status">Chargement de l'irradiance…</div>
   <canvas id="realtimeChart" width="800" height="300"></canvas>
 
-  <script>
-    // -------------------------
-    // Configuration / constants
-    // -------------------------
+<script>
+(() => {
+  // -------------------------
+  // Configuration / constants
+  // -------------------------
 
-    const ODRE_BASE =
-      "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets";
-    const INSEE_ANTONY = "92002";
+  const NAME_COMMUNE = "Antony"
+  const INSEE_COMMUNE = "92002"; // Antony
 
-    // IRIS code name map.
-    const IRIS_LABELS = {
-      920020101: "Parc de Sceaux",
-      920020102: "Nouveau Cimetière",
-      920020103: "La Fontaine",
-      920020104: "U.S. Métro",
-      920020105: "Croix de Berny",
-      920020106: "Velpeau",
-      920020107: "Jean Moulin",
-      920020201: "11 Novembre",
-      920020202: "Guillebaud",
-      920020203: "Chemin de Fer",
-      920020204: "Bois de l'Aurore",
-      920020205: "Zone d'Activités",
-      920020301: "Pajeaud",
-      920020302: "Parvis du Breuil et de la Bièvre",
-      920020303: "Fontaine Michalon",
-      920020304: "Conservatoire Darius Milhaud",
-      920020305: "Grand l",
-      920020306: "Lionel Terray",
-      920020307: "Fontaine Mouton",
-      920020308: "Baconnets",
-      920020401: "Parc Heller",
-      920020402: "Céline",
-      920020403: "Hôtel de Ville",
-      920020404: "Clinique du Bois de Verrières",
-      920020405: "Ancien Cimetière",
-      920020406: "Bas Graviers",
-      920020407: "Les Godets",
+  // Satellite resolution is ~5km and Antony is about 5km across, so use a
+  // single reference location somewhere in the middle for all of Antony.
+  const ANT_LAT = 48.75363; // The town hall is in the middle of Antony.
+  const ANT_LON = 2.29589;
+
+  const IRIS_LABELS = { // Antony IRIS names.  See iris-list.py
+    920020101: "Parc de Sceaux",
+    920020102: "Nouveau Cimetière",
+    920020103: "La Fontaine",
+    920020104: "U.S. Métro",
+    920020105: "Croix de Berny",
+    920020106: "Velpeau",
+    920020107: "Jean Moulin",
+    920020201: "11 Novembre",
+    920020202: "Guillebaud",
+    920020203: "Chemin de Fer",
+    920020204: "Bois de l'Aurore",
+    920020205: "Zone d'Activités",
+    920020301: "Pajeaud",
+    920020302: "Parvis du Breuil et de la Bièvre",
+    920020303: "Fontaine Michalon",
+    920020304: "Conservatoire Darius Milhaud",
+    920020305: "Grand l",
+    920020306: "Lionel Terray",
+    920020307: "Fontaine Mouton",
+    920020308: "Baconnets",
+    920020401: "Parc Heller",
+    920020402: "Céline",
+    920020403: "Hôtel de Ville",
+    920020404: "Clinique du Bois de Verrières",
+    920020405: "Ancien Cimetière",
+    920020406: "Bas Graviers",
+    920020407: "Les Godets",
+  };
+
+
+  const PANEL_TILT_DEG = 30;     // typical rooftop tilt
+  const PANEL_AZIMUTH_DEG = 0;   // 0 = south
+  const CALIB_K = 0.52;          // calibration factor, see calibrate.py
+
+
+  const RT_PAST_HOURS = 24;
+  const RT_FORECAST_HOURS = 24;
+  const RT_REFRESH_MINUTES = 17; // Notice new data fairly quickly, while staying polite
+  const RT_REFRESH_INTERVAL_MS = RT_REFRESH_MINUTES * 60 * 1000;
+
+
+  const NOCT = 45;       // Nominal operating cell temperature, °C
+  const GAMMA = -0.004;  // Power drop as cell temperature rises: -0.4 %/°C
+
+
+  const ODRE_BASE = "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets";
+  const OPEN_METEO_BASE = "https://satellite-api.open-meteo.com/v1/archive";
+
+
+  const HIST_METRICS = {
+    nb_inst: { label: "Nombre d'installations", unit: "" },
+    puis_rac_kw: { label: "Puissance photovoltaïque raccordée au réseau", unit: "kW" },
+    prod_an_kwh: { label: "Production annuelle vers le réseau", unit: "kWh" },
+  };
+
+  const RT_METRICS = {
+    power_kw: {
+      label: "Puissance estimée",
+      unit: "kW",
+      axisLabel: "Puissance (kW)",
+      tooltip: (v) => `Puissance estimée : ${v.toFixed(1)} kW`,
+    },
+
+    // In case we ever want to chart irradiance directly
+    gti_wm2: {
+      label: "Irradiance (plan incliné)",
+      unit: "W/m²",
+      axisLabel: "Irradiance (W/m²)",
+      tooltip: (v) => `Irradiance : ${v.toFixed(0)} W/m²`,
+    },
+  };
+
+  // ------------
+  // DOM cache
+  // ------------
+
+  const dom = {};
+  const $ = (id) => document.getElementById(id);
+
+  function cacheDom() {
+    dom.hMetricSelect = $("h-metric-select");
+    dom.hModeSelect = $("h-mode-select");
+    dom.hStatus = $("h-status");
+    dom.histCanvas = $("historyChart");
+
+    dom.rtStatus = $("rt-status");
+    dom.rtCanvas = $("realtimeChart");
+    dom.rtModeSelect = $("rt-mode-select");
+    dom.rtForecastToggle = $("rt-forecast-toggle");
+    dom.rtPersonalControls = $("rt-personal-controls");
+
+    dom.rtArraysContainer = $("rt-arrays");
+    dom.rtAddArrayBtn = $("rt-add-array");
+  }
+
+  // ------------
+  // State
+  // ------------
+
+  const hist = {
+    years: [],
+    dataByYear: {},
+    irisList: [], // IRIS codes with data
+    chart: null,
+  };
+
+  const rt = {
+    // Commune irradiance
+    irrPastCommune: [],
+    irrForecastCommune: [],
+
+    // Commune temperature
+    tempPast: [],
+    tempForecast: [],
+
+    // Commune capacities
+    capTotalKw: 0,
+    capTotalNb: 0,
+    capPerIris: [],
+
+    // Personal configuration
+    personalArrays: [
+      {
+        id: "arr1",
+        name: "Champ 1",
+        p_kwc: 3.0,
+        tilt_deg: PANEL_TILT_DEG,
+        azimuth_deg: PANEL_AZIMUTH_DEG,
+        perf_factor: 0.85,
+        irrPast: [],
+        irrForecast: [],
+      },
+    ],
+
+    chart: null,
+  };
+
+  const personalArrayDebouncers = new Map(); // arrayId -> debounced fn
+
+  // ------------
+  // Utilities
+  // ------------
+
+  function registreDatasetId(year) {
+    const yy = String(year).slice(-2);
+    return `registre-national-installation-production-stockage-electricite-agrege-3112${yy}`;
+  }
+
+  function irisDisplayName(codeiris) {
+    if (codeiris === null || codeiris === undefined) return "Quartier inconnu";
+    if (IRIS_LABELS[codeiris]) return IRIS_LABELS[codeiris];
+    return `Secteur ${codeiris}`;
+  }
+
+  function setStatus(el, msg) {
+    if (el) el.textContent = msg;
+  }
+
+  function setHistStatus(msg) {
+    setStatus(dom.hStatus, msg);
+  }
+
+  function setRealtimeStatus(msg) {
+    setStatus(dom.rtStatus, msg);
+  }
+
+  function showError(el, prefix, err) {
+    console.error(err);
+    setStatus(el, `${prefix} : ${err.message}`);
+  }
+
+  function debounce(fn, delayMs) {
+    let timeoutId = null;
+    return function (...args) {
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => fn.apply(this, args), delayMs);
     };
+  }
 
-    // Metrics definitions for the historical toggle
-    const METRICS = {
-      nb_inst: {
-        label: "Nombre d'installations",
-        unit: "",
-      },
-      puis_rac_kw: {
-        label: "Puissance photovoltaïque raccordée au réseau",
-        unit: "kW",
-      },
-      prod_an_kwh: {
-        label: "Production annuelle vers le réseau",
-        unit: "kWh",
-      },
+  // Debounce chart refresh so typing doesn't redraw on every keystroke.
+  // Separate from the "fetch irradiance" debounce used for tilt/azimuth.
+  const debouncedRealtimeChartUpdate = debounce(() => {
+    if (getCurrentRealtimeMode() === "personal") createOrUpdateRealtimeChart();
+  }, 1000);
+
+  function getCurrentRealtimeMode() {
+    return dom.rtModeSelect ? dom.rtModeSelect.value : "total";
+  }
+
+  // ----------------------------
+  // Persistence (localStorage)
+  // ----------------------------
+
+  const PERSONAL_STORAGE_KEY = `${NAME_COMMUNE}Solar.personalArrays.v1`;
+
+  function serializePersonalArrays(arrays) {
+    return {
+      v: 1,
+      savedAt: new Date().toISOString(),
+      arrays: (arrays || []).map(a => ({
+        id: String(a.id || ""),
+        name: String(a.name || ""),
+        p_kwc: Number(a.p_kwc) || 0,
+        tilt_deg: clamp(a.tilt_deg, 0, 90),
+        azimuth_deg: clamp(a.azimuth_deg, -180, 180),
+        perf_factor: clamp((Number(a.perf_factor) || 0) * 100, 10, 120) / 100,
+      })),
     };
+  }
 
-    // Irradiance config for the real-time graph
+  function restorePersonalArrays(payload) {
+    const arraysIn = payload?.arrays;
+    if (!Array.isArray(arraysIn) || arraysIn.length === 0) return null;
 
-    const OPEN_METEO_BASE = "https://satellite-api.open-meteo.com/v1/archive";
-
-    // NOTE: Could use per-IRIS latitude and longitude, but probably it
-    // wouldn't change anything as the satellite resolution is ~5km and
-    // Antony is about 5km across.
-    const ANT_LAT = 48.75363; // Town hall.
-    const ANT_LON = 2.29589;
-
-    const PANEL_TILT_DEG = 30; // typical rooftop tilt
-    const PANEL_AZIMUTH_DEG = 0; // 0 = south
-
-    const CALIB_K = 0.52; // calibration factor, see calibrate.py
-
-    const RT_PAST_HOURS = 24; // look back this many hours
-    const RT_FORECAST_HOURS = 24; // look ahead this many hours
-    const RT_REFRESH_MINUTES = 17; // how often we refresh the curve
-    const RT_REFRESH_INTERVAL_MS = RT_REFRESH_MINUTES * 60 * 1000;
-
-    // ------------
-    // State
-    // ------------
-
-    let dataByYear = {}; // { 2017: [ {codeiris, nb_inst, puis_rac_kw, prod_an_kwh}, ...], ... }
-    let years = []; // [2017, 2018, ...]
-    let irisList = []; // distinct IRIS codes
-    let histChart = null; // Chart.js instance for historical widget
-
-    let rtIrrPastSeries = [];     // [{ time, gti_w_per_m2 }, ...]  (observed)
-    let rtIrrForecastSeries = []; // [{ time, gti_w_per_m2 }, ...]  (forecast)
-    let rtCapTotalKw = 0; // total installed PV capacity (kW)
-    let rtCapTotalNb = 0; // total installed installations count
-    let rtCapPerIris = []; // [{ codeiris, puis_ins_kw }, ...]
-    let rtChart = null; // Chart.js instance for real-time widget
-
-    // ------------
-    // Utilities
-    // ------------
-
-    function registreDatasetId(year) {
-      // Year -> "...-3112YY"
-      const yy = String(year).slice(-2);
-      return `registre-national-installation-production-stockage-electricite-agrege-3112${yy}`;
+    const restored = [];
+    for (const a of arraysIn) {
+      const id = (a && typeof a.id === "string" && a.id.trim())
+        ? a.id.trim()
+        : `arr${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+      restored.push({
+        id,
+        name: (a && typeof a.name === "string" && a.name.trim()) ? a.name.trim() : "Champ",
+        p_kwc: Math.max(0, Number(a.p_kwc) || 0),
+        tilt_deg: clamp(a.tilt_deg, 0, 90),
+        azimuth_deg: clamp(a.azimuth_deg, -180, 180),
+        perf_factor: clamp((Number(a.perf_factor) || 0) * 100, 10, 120) / 100,
+        irrPast: [],
+        irrForecast: [],
+      });
     }
+    return restored.length ? restored : null;
+  }
 
-    function irisDisplayName(codeiris) {
-      if (codeiris === null || codeiris === undefined) {
-        return "Quartier inconnu";
-      }
-      if (IRIS_LABELS[codeiris]) {
-        return IRIS_LABELS[codeiris];
-      }
-      return `Secteur ${codeiris}`;
+  function savePersonalArraysToStorage() {
+    try {
+      const payload = serializePersonalArrays(rt.personalArrays);
+      localStorage.setItem(PERSONAL_STORAGE_KEY, JSON.stringify(payload));
+    } catch (e) {
+      // Ignore (private mode / blocked storage / quota). Widget still works.
     }
+  }
 
-    function setStatus(id, msg) {
-      const el = document.getElementById(id);
-      if (el) el.textContent = msg;
-    }
-
-    function setHistStatus(msg) {
-      setStatus("h-status", msg);
-    }
-
-    function setRealtimeStatus(msg) {
-      setStatus("rt-status", msg);
-    }
-
-    function showError(id, prefix, err) {
-      console.error(err);
-      setStatus(id, `${prefix} : ${err.message}`);
-    }
-
-    function showHistError(prefix, err) {
-      showError("h-status", prefix, err);
-    }
-
-    function showRealtimeError(prefix, err) {
-      showError("rt-status", prefix, err);
-    }
-
-    // ------------
-    // Fetch helpers
-    // ------------
-
-    async function fetchJson(url) {
-      // Disable caching in order to force a real network request each time,
-      // otherwise we may get the same cached Open-Meteo real-time data for
-      // every request, rather than the latest data.
-      const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status} for ${url}`);
-      }
-      return res.json();
-    }
-
-    async function datasetExists(datasetId) {
-      // Cheap existence test: ask for 1 record
-      const url = `${ODRE_BASE}/${datasetId}/records?limit=1`;
-      const res = await fetch(url);
-      if (res.status === 404) {
-        return false;
-      }
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status} probing dataset ${datasetId}`);
-      }
+  function loadPersonalArraysFromStorage() {
+    try {
+      const raw = localStorage.getItem(PERSONAL_STORAGE_KEY);
+      if (!raw) return false;
+      const payload = JSON.parse(raw);
+      const restored = restorePersonalArrays(payload);
+      if (!restored) return false;
+      rt.personalArrays = restored;
       return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  const debouncedSavePersonalArrays = debounce(savePersonalArraysToStorage, 1000);
+
+  // ------------
+  // Fetch helpers
+  // ------------
+
+  async function fetchJson(url) {
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+    return res.json();
+  }
+
+  async function datasetExists(datasetId) {
+    const url = `${ODRE_BASE}/${datasetId}/records?limit=1`;
+    const res = await fetch(url);
+    if (res.status === 404) return false;
+    if (!res.ok) throw new Error(`HTTP ${res.status} probing dataset ${datasetId}`);
+    return true;
+  }
+
+  async function findAvailableYears(firstYear = 2017, probeFromYear = 2025, maxFutureYears = 1) {
+    const currentYear = new Date().getFullYear();
+    const availableYears = [];
+
+    for (let year = firstYear; year <= currentYear + maxFutureYears; year++) {
+      if (year >= probeFromYear) {
+        const datasetId = registreDatasetId(year);
+        const exists = await datasetExists(datasetId);
+        if (!exists) break;
+      }
+      availableYears.push(year);
     }
 
-    async function findAvailableYears(
-      firstYear = 2017,
-      probeFromYear = 2025,
-      maxFutureYears = 2,
-    ) {
-      const currentYear = new Date().getFullYear();
-      const years = [];
+    if (availableYears.length === 0) throw new Error("No yearly registre datasets found");
+    return availableYears;
+  }
 
-      for (let year = firstYear; year <= currentYear + maxFutureYears; year++) {
-        if (year >= probeFromYear) {
-          const datasetId = registreDatasetId(year);
-          const exists = await datasetExists(datasetId);
-          if (!exists) break;
-        }
-        years.push(year);
-      }
+  async function fetchCommuneYearData(year) {
+    const datasetId = registreDatasetId(year);
+    const base = `${ODRE_BASE}/${datasetId}/records`;
 
-      if (years.length === 0) {
-        throw new Error("No yearly registre datasets found");
-      }
-      return years;
+    const energyField = year < 2020 ? "energieannuelleinjectee" : "energieannuelleglissanteinjectee";
+
+    const params = new URLSearchParams({
+      where: [
+        `codeinseecommune='${INSEE_COMMUNE}'`,
+        "codefiliere like 'SOLAI'",
+        "codetechnologie like 'PHOTV'",
+      ].join(" AND "),
+      select: [
+        "codeiris as codeiris",
+        "sum(nbinstallations) as nb_inst",
+        // Since the energy numbers (energie injectee), are for energy sent
+        // to the grid, to be consistent we use capacity attached to the grid.
+        "sum(puismaxrac) as puis_rac_kw",
+        `sum(${energyField}) as prod_an_kwh`,
+      ].join(", "),
+      group_by: "codeiris",
+      limit: "100",
+    });
+
+    const url = `${base}?${params.toString()}`;
+    const json = await fetchJson(url);
+    return json.results || [];
+  }
+
+  async function fetchCommuneCurrentInstalledCapacityKw() {
+    const datasetId = "registre-national-installation-production-stockage-electricite-agrege";
+    const base = `${ODRE_BASE}/${datasetId}/records`;
+
+    const params = new URLSearchParams({
+      where: [
+        `codeinseecommune='${INSEE_COMMUNE}'`,
+        "codefiliere like 'SOLAI'",
+        "codetechnologie like 'PHOTV'",
+      ].join(" AND "),
+      select: [
+        "codeiris as codeiris",
+        // As we just multiply the capacity by the irradiance to estimate the
+        // power, use the installed capacity, whether it is attached to the
+        // grid or not.  Consider, for example, that a small residential
+        // installation in the winter will typically self-consume all power
+        // produced, and send nothing to the grid.  Our multiplication will
+        // give a positive number: the amount produced and self-consumed.
+        // So we fundamentally aren't estimating the amount sent to the grid,
+        // which is why it makes no sense to use the capacity attached to the
+        // grid.
+        "sum(puismaxinstallee) as puis_ins_kw",
+        "sum(nbinstallations) as nb_inst",
+      ].join(", "),
+      group_by: "codeiris",
+      limit: "100",
+    });
+
+    const url = `${base}?${params.toString()}`;
+    const json = await fetchJson(url);
+    const rows = json.results || [];
+
+    let totalKw = 0;
+    let totalNb = 0;
+
+    for (const row of rows) {
+      const v = Number(row.puis_ins_kw) || 0;
+      const n = Number(row.nb_inst) || 0;
+      row.puis_ins_kw = v;
+      row.nb_inst = n;
+      totalKw += v;
+      totalNb += n;
     }
 
-    async function fetchAntonyYearData(year) {
-      const datasetId = registreDatasetId(year);
-      const base = `${ODRE_BASE}/${datasetId}/records`;
+    return { totalKw, totalNb, perIris: rows };
+  }
 
-      // Before 2020: "energieannuelleinjectee"
-      // From 2020 onwards: "energieannuelleglissanteinjectee"
-      const energyField =
-        year < 2020
-          ? "energieannuelleinjectee"
-          : "energieannuelleglissanteinjectee";
+  async function fetchIrradianceSeries(lat, lon, tiltDeg, azimuthDeg, pastHours, forecastHours) {
+    const params = new URLSearchParams({
+      latitude: String(lat),
+      longitude: String(lon),
+      hourly: "global_tilted_irradiance",
+      tilt: String(tiltDeg),
+      azimuth: String(azimuthDeg),
+      timeformat: "iso8601",
+      timezone: "Europe/Paris",
+      time_resolution: "native",
+      past_hours: String(pastHours),
+      forecast_hours: String(forecastHours),
+    });
 
-      const params = new URLSearchParams({
-        where: [
-          `codeinseecommune='${INSEE_ANTONY}'`,
-          "codefiliere like 'SOLAI'",
-          "codetechnologie like 'PHOTV'",
-        ].join(" AND "),
-        select: [
-          "codeiris as codeiris",
-          "sum(nbinstallations) as nb_inst",
-          // Since the energy numbers (energie injectee), are for energy sent
-          // to the grid, to be consistent we use capacity attached to the grid.
-          "sum(puismaxrac) as puis_rac_kw",
-          `sum(${energyField}) as prod_an_kwh`,
-        ].join(", "),
-        group_by: "codeiris",
-        limit: "100",
+    const url = `${OPEN_METEO_BASE}?${params.toString()}`;
+    const json = await fetchJson(url);
+
+    const times = json.hourly?.time || [];
+    const gti = json.hourly?.global_tilted_irradiance || [];
+
+    if (times.length !== gti.length) {
+      console.warn("Open-Meteo: timestamps != irradiance values:", times.length, gti.length);
+    }
+
+    const expectedTotal = pastHours + forecastHours;
+    if (times.length !== expectedTotal) {
+      console.warn("Open-Meteo: unexpected series length:", "expected", expectedTotal, "got", times.length);
+    }
+
+    const totalToUse = Math.min(expectedTotal, times.length, gti.length);
+    const splitIndex = Math.min(pastHours, totalToUse);
+
+    const past = [];
+    const forecast = [];
+
+    for (let i = 0; i < totalToUse; i++) {
+      const tIso = times[i];
+      const v = gti[i];
+      if (v == null) continue;
+
+      const point = { time: tIso, gti_w_per_m2: v };
+      if (i < splitIndex) past.push(point);
+      else forecast.push(point);
+    }
+
+    return { past, forecast };
+  }
+
+  async function fetchTemperatureSeries(lat, lon, pastHours, forecastHours) {
+    const params = new URLSearchParams({
+      latitude: String(lat),
+      longitude: String(lon),
+      hourly: "temperature_2m",
+      timeformat: "iso8601",
+      timezone: "Europe/Paris",
+      past_hours: String(pastHours),
+      forecast_hours: String(forecastHours),
+    });
+
+    const url = `https://api.open-meteo.com/v1/forecast?${params.toString()}`;
+    const json = await fetchJson(url);
+
+    const times = json.hourly?.time || [];
+    const temps = json.hourly?.temperature_2m || [];
+
+    const expected = pastHours + forecastHours;
+    const total = Math.min(times.length, temps.length, expected);
+    const split = Math.min(pastHours, total);
+
+    const past = [];
+    const forecast = [];
+
+    for (let i = 0; i < total; i++) {
+      const t = temps[i];
+      if (t == null) continue;
+      const entry = { time: times[i], t_air_c: t };
+      if (i < split) past.push(entry);
+      else forecast.push(entry);
+    }
+
+    return { past, forecast };
+  }
+
+  // ------------
+  // Data preparation (hist + rt)
+  // ------------
+
+  function computeIrisList() {
+    const codes = new Set();
+    for (const yr of hist.years) {
+      const rows = hist.dataByYear[yr] || [];
+      for (const row of rows) codes.add(row.codeiris);
+    }
+
+    const arr = Array.from(codes);
+    arr.sort((a, b) => {
+      if (a === null) return -1;
+      if (b === null) return 1;
+      return Number(a) - Number(b);
+    });
+
+    hist.irisList = arr;
+  }
+
+  function getValue(row, metricKey) {
+    const v = row[metricKey];
+    if (v === null || v === undefined) return 0;
+    return Number(v) || 0;
+  }
+
+  function computePowerSeriesKw(irrSeries, totalKw) {
+    return irrSeries.map((pt) => {
+      const frac = pt.gti_w_per_m2 / 1000.0;
+      return { time: pt.time, power_kw: CALIB_K * totalKw * frac };
+    });
+  }
+
+  function computePersonalSeriesForArray(arr, irrSeries, tempSeries) {
+    const p_kwc = Number(arr.p_kwc) || 0;
+    const perf_factor = Number(arr.perf_factor) || 0;
+
+    const mapTemp = new Map(tempSeries.map((pt) => [pt.time, pt.t_air_c]));
+    const result = [];
+
+    for (const pt of irrSeries) {
+      const G = pt.gti_w_per_m2 || 0;
+      const Tair = mapTemp.get(pt.time);
+      if (Tair == null) continue;
+
+      const Tpanel = Tair + ((NOCT - 20) / 800) * G;
+      const frac = G / 1000.0;
+      const tempFactor = Math.max(0, 1 + GAMMA * (Tpanel - 25));
+      const powerKw = p_kwc * frac * perf_factor * tempFactor;
+
+      result.push({ time: pt.time, power_kw: powerKw, t_panel_c: Tpanel });
+    }
+
+    return result;
+  }
+
+  function clamp(v, lo, hi) {
+    v = Number(v);
+    if (Number.isNaN(v)) return lo;
+    return Math.min(hi, Math.max(lo, v));
+  }
+
+  function makeNewPersonalArray(nextIndex) {
+    return {
+      id: `arr${Date.now()}_${Math.floor(Math.random() * 1e6)}`,
+      name: `Champ ${nextIndex}`,
+      p_kwc: 3.0,
+      tilt_deg: PANEL_TILT_DEG,
+      azimuth_deg: PANEL_AZIMUTH_DEG,
+      perf_factor: 0.85,
+      irrPast: [],
+      irrForecast: [],
+    };
+  }
+
+  // ------------
+  // Chart building
+  // ------------
+
+  function buildHistDatasets(metricKey, mode) {
+    const metricDef = HIST_METRICS[metricKey];
+
+    if (mode === "total") {
+      const values = hist.years.map((yr) => {
+        const rows = hist.dataByYear[yr] || [];
+        return rows.reduce((sum, row) => sum + getValue(row, metricKey), 0);
       });
-
-      const url = `${base}?${params.toString()}`;
-      const json = await fetchJson(url);
-      return json.results || [];
-    }
-
-    async function fetchAntonyCurrentInstalledCapacityKw() {
-      // Latest aggregate dataset (no year suffix)
-      const datasetId =
-        "registre-national-installation-production-stockage-electricite-agrege";
-      const base = `${ODRE_BASE}/${datasetId}/records`;
-
-      const params = new URLSearchParams({
-        where: [
-          `codeinseecommune='${INSEE_ANTONY}'`,
-          "codefiliere like 'SOLAI'",
-          "codetechnologie like 'PHOTV'",
-        ].join(" AND "),
-        select: [
-          "codeiris as codeiris",
-          // As we just multiply the capacity by the irradiance to estimate the
-          // power, use the installed capacity, whether it is attached to the
-          // grid or not.  Consider for example, that a small residential
-          // installation in the winter will typically self-consume all power
-          // produced, and send nothing to the grid.  Our multiplication will
-          // give a positive number: the amount produced and self-consumed.
-          // So we fundamentally aren't estimating the amount sent to the grid,
-          // which is why it makes no sense to use the capacity attached to the
-          // grid.
-          "sum(puismaxinstallee) as puis_ins_kw",
-          "sum(nbinstallations) as nb_inst",
-        ].join(", "),
-        group_by: "codeiris",
-        limit: "100",
-      });
-
-      const url = `${base}?${params.toString()}`;
-      const json = await fetchJson(url);
-      const rows = json.results || [];
-
-      let totalKw = 0;
-      let totalNb = 0;
-      for (const row of rows) {
-        const v = Number(row.puis_ins_kw) || 0;
-        const n = Number(row.nb_inst) || 0;
-        row.puis_ins_kw = v;
-        row.nb_inst = n;
-        totalKw += v;
-        totalNb += n;
-      }
 
       return {
-        totalKw,
-        totalNb,
-        perIris: rows, // reserved for future by-quartier curves
+      datasets: [{ label: `Total ${NAME_COMMUNE}`, data: values, stack: "stack1" }],
+        metricLabel: metricDef.label,
+        metricUnit: metricDef.unit,
       };
     }
 
-    async function fetchIrradianceSeries(lat, lon, pastHours, forecastHours) {
-      const params = new URLSearchParams({
-        latitude: String(lat),
-        longitude: String(lon),
-        hourly: "global_tilted_irradiance",
-        tilt: String(PANEL_TILT_DEG),
-        azimuth: String(PANEL_AZIMUTH_DEG),
-        timeformat: "iso8601",
-        timezone: "Europe/Paris",
-        time_resolution: "native",
-        past_hours: String(pastHours),
-        forecast_hours: String(forecastHours),
+    const datasets = hist.irisList.map((code) => {
+      const values = hist.years.map((yr) => {
+        const rows = hist.dataByYear[yr] || [];
+        const row = rows.find((r) => r.codeiris === code);
+        return row ? getValue(row, metricKey) : 0;
       });
 
-      const url = `${OPEN_METEO_BASE}?${params.toString()}`;
-      const json = await fetchJson(url);
+      return { label: irisDisplayName(code), data: values, stack: "stack1" };
+    });
 
-      const times = json.hourly?.time || [];
-      const gti = json.hourly?.global_tilted_irradiance || [];
+    return { datasets, metricLabel: metricDef.label, metricUnit: metricDef.unit };
+  }
 
-      if (times.length !== gti.length) {
-        console.warn(
-          "Open-Meteo: nombre de timestamps différent du nombre de valeurs irradiance :",
-          "times =", times.length,
-          "gti =", gti.length,
-        );
-      }
+  function intersectTimesSorted(seriesList) {
+    // seriesList: array of arrays of points: [{time:..}, ...]
+    if (!Array.isArray(seriesList) || seriesList.length === 0) return [];
 
-      const expectedTotal = pastHours + forecastHours;
-      if (times.length !== expectedTotal) {
-        console.warn(
-          "Open-Meteo: longueur inattendue de la série irradiance :",
-          "attendu =", expectedTotal,
-          "reçu =", times.length,
-        );
-      }
-
-      const totalToUse = Math.min(expectedTotal, times.length, gti.length);
-      const splitIndex = Math.min(pastHours, totalToUse);
-
-      const past = [];
-      const forecast = [];
-
-      for (let i = 0; i < totalToUse; i++) {
-        const tIso = times[i];
-        const v = gti[i];
-
-        const point = v == null ? null : { time: tIso, gti_w_per_m2: v };
-
-        if (i < splitIndex) {
-          if (point) past.push(point);
-        } else {
-          if (point) forecast.push(point);
-        }
-      }
-
-      return { past, forecast };
+    let common = null;
+    for (const series of seriesList) {
+      const s = new Set((series || []).map(p => p.time));
+      common = common == null ? s : new Set([...common].filter(t => s.has(t)));
+      if (!common.size) break;
     }
 
-    // ------------
-    // Data preparation
-    // ------------
+    // Times are ISO8601, lexical sort is chronological.
+    return Array.from(common || []).sort();
+  }
 
-    function computeIrisList() {
-      const codes = new Set();
-      for (const yr of years) {
-        const rows = dataByYear[yr] || [];
-        for (const row of rows) {
-          codes.add(row.codeiris);
-        }
-      }
-      // Convert to array, null first, others sorted
-      const arr = Array.from(codes);
-      arr.sort((a, b) => {
-        if (a === null) return -1;
-        if (b === null) return 1;
-        return a.localeCompare(b);
-      });
-      irisList = arr;
+  function buildTimeline(pastLists, forecastLists) {
+    const pastTimes = intersectTimesSorted(pastLists || []);
+    const cutoff = pastTimes.length ? pastTimes[pastTimes.length - 1] : null;
+
+    let forecastTimes = intersectTimesSorted(forecastLists || []);
+
+    if (cutoff) forecastTimes = forecastTimes.filter(t => t > cutoff);
+
+    const labels = pastTimes.concat(forecastTimes);
+    return { pastTimes, forecastTimes, labels, nPast: pastTimes.length, cutoff };
+  }
+
+  function extractByTimes(series, times) {
+    const map = new Map((series || []).map(p => [p.time, p]));
+    return (times || []).map(t => map.get(t)).filter(Boolean);
+  }
+
+  function mergeByTimes(pastSeries, forecastSeries, pastTimes, forecastTimes) {
+    return extractByTimes(pastSeries, pastTimes)
+      .concat(extractByTimes(forecastSeries, forecastTimes));
+  }
+
+  function forecastSegment(nPast) {
+    return {
+      segment: {
+        borderDash: (ctx) => (ctx.p1DataIndex >= nPast ? [5, 5] : undefined),
+      },
+    };
+  }
+
+  function buildRealtimeDatasets(mode, showForecast) {
+    // TOTAL
+    if (mode === "total") {
+      const tl = buildTimeline([rt.irrPastCommune || []], showForecast ? [rt.irrForecastCommune || []] : []);
+      const irrMerged = mergeByTimes(rt.irrPastCommune, rt.irrForecastCommune, tl.pastTimes, tl.forecastTimes);
+
+      const series = computePowerSeriesKw(irrMerged, rt.capTotalKw);
+      const data = series.map(p => p.power_kw);
+
+      return {
+        labels: tl.labels,
+        datasets: [{
+          label: "Puissance produite",
+          data,
+          borderWidth: 2,
+          tension: 0.2,
+          pointRadius: 0,
+          pointHitRadius: 10,
+          fill: true,
+          stack: "rt-total",
+          showInLegend: true,
+          _forecastStartIndex: tl.nPast,
+          ...forecastSegment(tl.nPast),
+        }],
+      };
     }
 
-    function getValue(row, metricKey) {
-      const v = row[metricKey];
-      if (v === null || v === undefined) return 0;
-      // ODRE sometimes returns numbers as strings; make sure we parse
-      return Number(v) || 0;
-    }
+    // IRIS
+    if (mode === "iris") {
+      const tl = buildTimeline([rt.irrPastCommune || []], showForecast ? [rt.irrForecastCommune || []] : []);
+      const irrMerged = mergeByTimes(rt.irrPastCommune, rt.irrForecastCommune, tl.pastTimes, tl.forecastTimes);
 
-    function computePowerSeriesKw(irrSeries, totalKw) {
-      return irrSeries.map((pt) => {
-        const frac = pt.gti_w_per_m2 / 1000.0; // 1000 W/m² ~ full power
-        const pKw = CALIB_K * totalKw * frac;
-        return {
-          time: pt.time,
-          power_kw: pKw,
-        };
-      });
-    }
-
-    // ------------
-    // Chart building
-    // ------------
-
-    function buildHistDatasets(metricKey, mode) {
-      const metricDef = METRICS[metricKey];
-
-      // Mode 1: total Antony (one bar per year)
-      if (mode === "total") {
-        const values = years.map((yr) => {
-          const rows = dataByYear[yr] || [];
-          return rows.reduce((sum, row) => sum + getValue(row, metricKey), 0);
-        });
-
-        return {
-          datasets: [
-            {
-              label: "Total Antony",
-              data: values,
-              stack: "stack1",
-            },
-          ],
-          metricLabel: metricDef.label,
-          metricUnit: metricDef.unit,
-        };
-      }
-
-      // Mode 2: by IRIS (stacked)
       const datasets = [];
 
-      irisList.forEach((code) => {
-        const values = years.map((yr) => {
-          const rows = dataByYear[yr] || [];
-          const row = rows.find((r) => r.codeiris === code);
-          if (!row) return 0;
-          return getValue(row, metricKey);
-        });
-
-        datasets.push({
-          label: irisDisplayName(code),
-          data: values,
-          stack: "stack1",
-        });
-      });
-
-      return { datasets, metricLabel: metricDef.label, metricUnit: metricDef.unit };
-    }
-
-    function buildRealtimeDatasets(mode, showForecast) {
-      const past = rtIrrPastSeries || [];
-      const forecast = rtIrrForecastSeries || [];
-
-      if (!past.length && !forecast.length) {
-        return { labels: [], datasets: [] };
-      }
-
-      let labels = [];
-      const pastTimes = past.map((p) => p.time);
-      const forecastTimes = forecast.map((p) => p.time);
-
-      if (showForecast && forecastTimes.length) {
-        labels = pastTimes.concat(forecastTimes);
-      } else {
-        labels = pastTimes;
-      }
-
-      // --- TOTAL MODE ---
-      if (mode === "total") {
-        const pastSeries = computePowerSeriesKw(past, rtCapTotalKw);
-        const pastData = pastSeries.map((p) => p.power_kw);
-
-        if (!showForecast || !forecast.length) {
-          return {
-            labels,
-            datasets: [
-              {
-                label: "Puissance produite totale",
-                data: pastData,
-                borderWidth: 2,
-                tension: 0.2,
-                pointRadius: 0,
-                pointHitRadius: 10,
-                fill: true,
-                stack: "rt-total",
-              },
-            ],
-          };
-        }
-
-        const forecastSeries = computePowerSeriesKw(
-          forecast,
-          rtCapTotalKw,
-        );
-        const forecastData = forecastSeries.map((p) => p.power_kw);
-
-        const nPast = pastData.length;
-        const nForecast = forecastData.length;
-
-        // Blue: real data, then nulls
-        const pastDataPadded = pastData.concat(
-          new Array(nForecast).fill(null),
-        );
-
-        // Red: start exactly at the last past point,
-        // then continue with the forecast
-        let forecastDataPadded;
-        if (nPast > 0) {
-          const lastPast = pastData[nPast - 1];
-          forecastDataPadded = new Array(nPast - 1)
-            .fill(null)
-            .concat([lastPast])
-            .concat(forecastData);
-        } else {
-          // No past data at all – just show the forecast
-          forecastDataPadded = forecastData.slice();
-        }
-
-        return {
-          labels,
-          datasets: [
-            {
-              label: "Puissance produite totale (observée)",
-              data: pastDataPadded,
-              borderWidth: 2,
-              tension: 0.2,
-              pointRadius: 0,
-              pointHitRadius: 10,
-              fill: true,
-              stack: "rt-total",
-              showInLegend: true,
-            },
-            {
-              label: "Prévision (24 h)",
-              data: forecastDataPadded,
-              borderWidth: 2,
-              borderDash: [5, 5],
-              tension: 0.2,
-              pointRadius: 0,
-              pointHitRadius: 10,
-              fill: true,
-              stack: "rt-total",
-              showInLegend: true,
-            },
-          ],
-        };
-      }
-
-      // --- IRIS MODE: one stacked area per quartier ---
-      const datasets = [];
-      const nPast = pastTimes.length;
-      const nForecast = forecastTimes.length;
-
-      for (const row of rtCapPerIris || []) {
+      for (const row of rt.capPerIris || []) {
         const capKw = Number(row.puis_ins_kw) || 0;
         if (capKw <= 0) continue;
 
         const codeiris = row.codeiris === undefined ? null : row.codeiris;
         const name = irisDisplayName(codeiris);
 
-        // Observed part
-        const pastData = past.map((pt) => {
-          const frac = pt.gti_w_per_m2 / 1000.0;
-          return CALIB_K * capKw * frac;
-        });
-
-        if (!showForecast || !forecast.length) {
-          datasets.push({
-            label: name,
-            data: pastData,
-            borderWidth: 1,
-            tension: 0.2,
-            pointRadius: 0,
-            pointHitRadius: 10,
-            fill: true,
-            stack: "rt-iris",
-            showInLegend: true,
-          });
-          continue;
-        }
-
-        // Forecast part
-        const forecastData = forecast.map((pt) => {
-          const frac = pt.gti_w_per_m2 / 1000.0;
-          return CALIB_K * capKw * frac;
-        });
-
-        const pastDataPadded = pastData.concat(
-          new Array(nForecast).fill(null),
-        );
-
-        let forecastDataPadded;
-        const nPastLocal = pastData.length;
-
-        if (nPastLocal > 0) {
-          const lastPast = pastData[nPastLocal - 1];
-          forecastDataPadded = new Array(nPastLocal - 1)
-            .fill(null)
-            .concat([lastPast])
-            .concat(forecastData);
-        } else {
-          forecastDataPadded = forecastData.slice();
-        }
+        const data = irrMerged.map(pt => CALIB_K * capKw * ((pt.gti_w_per_m2 || 0) / 1000.0));
 
         datasets.push({
-          label: `${name} (observé)`,
-          data: pastDataPadded,
+          label: name,
+          data,
           borderWidth: 1,
           tension: 0.2,
           pointRadius: 0,
@@ -678,151 +804,189 @@
           fill: true,
           stack: "rt-iris",
           showInLegend: true,
+          _forecastStartIndex: tl.nPast,
+          ...forecastSegment(tl.nPast),
         });
+      }
+
+      return { labels: tl.labels, datasets };
+    }
+
+    // PERSONAL
+    if (mode === "personal") {
+      const arrays = (rt.personalArrays || []).slice();
+
+      const tl = buildTimeline(
+        [rt.tempPast || [], ...arrays.map(a => a.irrPast || [])],
+        showForecast ? [rt.tempForecast || [], ...arrays.map(a => a.irrForecast || [])] : []
+      );
+
+      const tempMerged = mergeByTimes(rt.tempPast, rt.tempForecast, tl.pastTimes, tl.forecastTimes);
+
+      const datasets = [];
+
+      for (const arr of arrays) {
+        const irrMerged = mergeByTimes(arr.irrPast, arr.irrForecast, tl.pastTimes, tl.forecastTimes);
+        const pts = computePersonalSeriesForArray(arr, irrMerged, tempMerged);
 
         datasets.push({
-          label: `${name} (prévision)`,
-          data: forecastDataPadded,
-          borderWidth: 1,
-          borderDash: [5, 5],
+          label: arr.name || "Champ",
+          baseLabel: arr.name || "Champ",
+          data: pts.map(p => p.power_kw),
+          panelTemps: pts.map(p => p.t_panel_c),
+          borderWidth: 1.5,
           tension: 0.2,
           pointRadius: 0,
           pointHitRadius: 10,
           fill: true,
-          stack: "rt-iris",
-          showInLegend: false, // hidden in legend to avoid clutter
+          stack: "rt-personal",
+          showInLegend: true,
+          _forecastStartIndex: tl.nPast,
+          ...forecastSegment(tl.nPast),
         });
       }
 
-      return { labels, datasets };
+      return { labels: tl.labels, datasets };
+    }
+  }
+
+  function createOrUpdateHistChart(metricKey) {
+    if (!dom.histCanvas) return;
+    const ctx = dom.histCanvas.getContext("2d");
+    const mode = dom.hModeSelect ? dom.hModeSelect.value : "iris";
+
+    const { datasets, metricLabel, metricUnit } = buildHistDatasets(metricKey, mode);
+    const yLabel = metricUnit ? `${metricLabel} (${metricUnit})` : metricLabel;
+    const stacked = (mode === "iris")
+
+    if (hist.chart) {
+      hist.chart.data.labels = hist.years;
+      hist.chart.data.datasets = datasets;
+      hist.chart.options.plugins.title.text = metricLabel;
+      hist.chart.options.scales.y.title.text = yLabel;
+      hist.chart.options.scales.x.stacked = stacked;
+      hist.chart.options.scales.y.stacked = stacked;
+      hist.chart.update();
+      return;
     }
 
-    function createOrUpdateHistChart(metricKey) {
-      const ctx = document.getElementById("solarChart").getContext("2d");
-      const modeSelect = document.getElementById("mode-select");
-      const mode = modeSelect ? modeSelect.value : "iris"; // default
-
-      const { datasets, metricLabel, metricUnit } = buildHistDatasets(
-        metricKey,
-        mode,
-      );
-      const yLabel = metricUnit ? `${metricLabel} (${metricUnit})` : metricLabel;
-      const stacked = mode === "iris";
-
-      if (histChart) {
-        histChart.data.labels = years;
-        histChart.data.datasets = datasets;
-        histChart.options.plugins.title.text = metricLabel;
-        histChart.options.scales.y.title.text = yLabel;
-        histChart.options.scales.x.stacked = stacked;
-        histChart.options.scales.y.stacked = stacked;
-        histChart.update();
-        return;
-      }
-
-      histChart = new Chart(ctx, {
-        type: "bar",
-        data: {
-          labels: years,
-          datasets: datasets,
-        },
-        options: {
-          responsive: true,
-          plugins: {
-            title: {
-              display: true,
-              text: metricLabel,
-            },
-            tooltip: {
-              callbacks: {
-                label: function (context) {
-                  const label = context.dataset.label || "";
-                  const value = context.parsed.y;
-                  return `${label}: ${value.toLocaleString("fr-FR")}`;
-                },
-              },
-            },
-          },
-          scales: {
-            x: {
-              stacked: stacked,
-            },
-            y: {
-              stacked: stacked,
-              beginAtZero: true,
-              title: {
-                display: true,
-                text: yLabel,
+    hist.chart = new Chart(ctx, {
+      type: "bar",
+      data: { labels: hist.years, datasets },
+      options: {
+        responsive: true,
+        plugins: {
+          title: { display: true, text: metricLabel },
+          tooltip: {
+            callbacks: {
+              label: (context) => {
+                const label = context.dataset.label || "";
+                const value = context.parsed.y;
+                return `${label}: ${value.toLocaleString("fr-FR")}`;
               },
             },
           },
         },
-      });
-    }
+        scales: {
+          x: { stacked },
+          y: {
+            stacked,
+            beginAtZero: true,
+            title: { display: true, text: yLabel },
+          },
+        },
+      },
+    });
+  }
 
-    function createOrUpdateRealtimeChart() {
-      const canvas = document.getElementById("realtimeChart");
-      if (!canvas) return;
-      const ctx = canvas.getContext("2d");
+  function hhmmFromIso(label) {
+    if (!label) return "";
+    const t = String(label).split("T")[1] || String(label);
+    return t.slice(0, 5);
+  }
 
-      const modeSelect = document.getElementById("rt-mode-select");
-      const mode = modeSelect ? modeSelect.value : "total";
+  function createOrUpdateRealtimeChart() {
+    if (!dom.rtCanvas) return;
+    const ctx = dom.rtCanvas.getContext("2d");
 
-      const forecastToggle = document.getElementById("rt-forecast-toggle");
-      const showForecast = forecastToggle ? forecastToggle.checked : false;
+    const mode = getCurrentRealtimeMode();
+    const showForecast = dom.rtForecastToggle ? dom.rtForecastToggle.checked : false;
 
-      const { labels, datasets } = buildRealtimeDatasets(mode, showForecast);
-      const yLabel = "Puissance (kW)";
-      const stacked = mode === "iris";
+    const { labels, datasets } = buildRealtimeDatasets(mode, showForecast);
+    const stacked = (mode === "iris") || (mode === "personal" && (rt.personalArrays || []).length > 1);
 
-      if (rtChart) {
-        rtChart.data.labels = labels;
-        rtChart.data.datasets = datasets;
-        rtChart.options.scales.x.stacked = stacked;
-        rtChart.options.scales.y.stacked = stacked;
-        rtChart.update();
-        return;
-      }
+    const rtMetricKey = "power_kw";
+    const rtMetric = RT_METRICS[rtMetricKey];
 
-      rtChart = new Chart(ctx, {
+    if (rt.chart) {
+      rt.chart.data.labels = labels;
+      rt.chart.data.datasets = datasets;
+      rt.chart.options.plugins.title.text = rtMetric.label;
+      rt.chart.options.scales.x.stacked = stacked;
+      rt.chart.options.scales.y.title.text = rtMetric.axisLabel;
+      rt.chart.options.scales.y.stacked = stacked;
+      rt.chart.update();
+    } else {
+      rt.chart = new Chart(ctx, {
         type: "line",
-        data: {
-          labels,
-          datasets,
-        },
+        data: { labels, datasets },
         options: {
           responsive: true,
-          interaction: {
-            mode: "nearest",
-            intersect: false,
-          },
+          interaction: { mode: "index", intersect: false },
           plugins: {
-            title: {
-              display: true,
-              text: "Production estimée à partir des données météo",
-            },
+            title: { display: true, text: rtMetric.label },
             tooltip: {
               callbacks: {
-                title: function (items) {
-                  const label = items[0].label;
-                  return `Heure : ${label}`;
+                title: (items) => {
+                  if (!items || !items.length) return "";
+                  const t = `Heure : ${hhmmFromIso(items[0].label)}`;
+                  const isForecast = items.some(it => {
+                    const start = it?.dataset?._forecastStartIndex;
+                    return (typeof start === "number") && start !== null && (it.dataIndex >= start);
+                  });
+                  return isForecast ? `${t} (prévision)` : t;
                 },
-                label: function (context) {
+                label: (context) => {
                   const v = context.parsed.y;
-                  return `Puissance estimée : ${v.toFixed(1)} kW`;
+                  if (v == null) return "";
+
+                  // Default behaviour for non-personal modes
+                  if (getCurrentRealtimeMode() !== "personal") return rtMetric.tooltip(v);
+
+                  const ds = context.dataset || {};
+                  const name = ds.baseLabel || ds.label || "Champ";
+                  const t = (ds.panelTemps || [])[context.dataIndex];
+                  let msg = `${name} : ${v.toFixed(1)} kW`;
+                  if (typeof t === "number" && !Number.isNaN(t)) {
+                    msg += ` (température panneau ≈ ${t.toFixed(1)} °C)`;
+                  }
+                  return msg;
                 },
+                footer: (items) => {
+                  if (getCurrentRealtimeMode() !== "personal") return "";
+                  if (!items || !items.length) return "";
+
+                  const idx = items[0].dataIndex;
+                  const chart = items[0].chart;
+                  if (!chart) return "";
+
+                  // Sum *all* datasets at this index (not just the hovered tooltip items)
+                  // so we always get the true stacked total.
+                  let total = 0;
+                  for (const ds of (chart.data.datasets || [])) {
+                    const v = ds?.data?.[idx];
+                    if (typeof v === "number" && !Number.isNaN(v)) total += v;
+                  }
+
+                  return `Puissance totale : ${total.toFixed(1)} kW`;
+                }
               },
             },
             legend: {
               labels: {
-                // Only show datasets that explicitly want to appear
-                filter: function (item, data) {
-                  const datasets = (data && data.datasets) || [];
-                  const ds = datasets[item.datasetIndex];
-
-                  if (!ds) return true;
-                  if (ds.showInLegend === false) return false;
-                  return true;
+                filter: (item, data) => {
+                  const ds = (data?.datasets || [])[item.datasetIndex];
+                  return !(ds && ds.showInLegend === false);
                 },
               },
             },
@@ -830,147 +994,289 @@
           scales: {
             x: {
               type: "category",
-              stacked: stacked,
+              stacked,
               ticks: {
-                callback: function (value, index) {
-                  const allLabels = this.chart.data.labels || [];
-                  const label = allLabels[index] || "";
-                  if (!label) return "";
-                  const t = label.split("T")[1] || label;
-                  return t.slice(0, 5); // "HH:MM"
+                callback: function (_value, index) {
+                  const label = (this.chart.data.labels || [])[index] || "";
+                  return hhmmFromIso(label)
                 },
               },
             },
             y: {
               beginAtZero: true,
-              stacked: stacked,
-              title: {
-                display: true,
-                text: yLabel,
-              },
+              stacked,
+              title: { display: true, text: rtMetric.axisLabel },
             },
           },
         },
       });
     }
 
-    async function fetchIrradianceAndUpdate() {
-      const { past, forecast } = await fetchIrradianceSeries(
-        ANT_LAT,
-        ANT_LON,
-        RT_PAST_HOURS,
-        RT_FORECAST_HOURS
-      );
-
-      rtIrrPastSeries = past;
-      rtIrrForecastSeries = forecast;
-
-      createOrUpdateRealtimeChart();
-
-      // Let the user know that everything is OK, replacing any previous failure
-      // status, eg due to a network outage.
-      // NOTE: The irradiance data is updated once per hour.  We poll more often
-      // than that (every RT_REFRESH_MINUTES minutes) to ensure we notice any
-      // new data swiftly, but the graph itself will only update once per hour.
+    if (mode === "personal") {
+      const n = (rt.personalArrays || []).length;
+      const sumPkwc = (rt.personalArrays || []).reduce((s, a) => s + (Number(a.p_kwc) || 0), 0);
       setRealtimeStatus(
-        `Capacité photovoltaïque installée : ${rtCapTotalKw.toFixed(1)} kW crête (${rtCapTotalNb} installations). ` +
-          `Courbe mise à jour une fois par heure.`,
+        `Estimation basée sur vos paramètres (${n} champ${n > 1 ? "s" : ""}, total = ${sumPkwc.toFixed(1)} kWc). ` +
+        `Mise à jour environ une fois par heure.`
+      );
+    } else {
+      setRealtimeStatus(
+        `Capacité photovoltaïque installée à ${NAME_COMMUNE} : ${rt.capTotalKw.toFixed(1)} kWc (${rt.capTotalNb} installations). ` +
+        `Mise à jour environ une fois par heure.`
       );
     }
+  }
 
-    // ------------
-    // Main init
-    // ------------
+  // ------------
+  // Realtime refreshers
+  // ------------
 
-    async function initHist() {
-      try {
-        setHistStatus("Recherche des années disponibles…");
-        years = await findAvailableYears();
-        setHistStatus(
-          `Années disponibles : ${years.join(", ")}. Chargement des données d'Antony…`,
-        );
+  async function fetchIrradianceAndTemperatureCommune() {
+    const [irr, temp] = await Promise.all([
+      fetchIrradianceSeries(ANT_LAT, ANT_LON, PANEL_TILT_DEG, PANEL_AZIMUTH_DEG, RT_PAST_HOURS, RT_FORECAST_HOURS),
+      fetchTemperatureSeries(ANT_LAT, ANT_LON, RT_PAST_HOURS, RT_FORECAST_HOURS),
+    ]);
 
-        // Fetch Antony data for each year
-        for (const year of years) {
-          const rows = await fetchAntonyYearData(year);
-          dataByYear[year] = rows;
-        }
+    rt.irrPastCommune = irr.past;
+    rt.irrForecastCommune = irr.forecast;
+    rt.tempPast = temp.past;
+    rt.tempForecast = temp.forecast;
+  }
 
-        computeIrisList();
-        setHistStatus(
-          "Données chargées. Vous pouvez changer la métrique avec le menu déroulant.",
-        );
+  async function fetchIrradianceForArray(arr) {
+    const tilt = clamp(arr.tilt_deg, 0, 90);
+    const az = clamp(arr.azimuth_deg, -180, 180);
+    const irr = await fetchIrradianceSeries(
+      ANT_LAT, ANT_LON,
+      tilt,
+      az,
+      RT_PAST_HOURS, RT_FORECAST_HOURS
+    );
+    arr.irrPast = irr.past;
+    arr.irrForecast = irr.forecast;
+  }
 
-        const metricSelect = document.getElementById("metric-select");
-        const modeSelect = document.getElementById("mode-select");
+  async function refetchAllPersonalIrradiance() {
+    const arrays = rt.personalArrays || [];
+    await Promise.all(arrays.map(a => fetchIrradianceForArray(a)));
+  }
 
-        const initialMetric = metricSelect.value;
-        createOrUpdateHistChart(initialMetric);
+  function renderPersonalArrayControls() {
+    if (!dom.rtArraysContainer) return;
+    dom.rtArraysContainer.textContent = "";
 
-        metricSelect.addEventListener("change", () => {
-          createOrUpdateHistChart(metricSelect.value);
+    const arrays = rt.personalArrays || [];
+    arrays.forEach((arr, idx) => {
+      const row = document.createElement("div");
+      row.className = "rt-array-row";
+
+      const name = document.createElement("input");
+      name.type = "text";
+      name.className = "rt-array-name";
+      name.value = arr.name || `Champ ${idx + 1}`;
+      name.placeholder = `Champ ${idx + 1}`;
+      name.title = "Nom du champ (ex. Est, Ouest, Toit garage…)";
+      name.addEventListener("change", () => {
+        arr.name = name.value || `Champ ${idx + 1}`;
+        debouncedSavePersonalArrays();
+        debouncedRealtimeChartUpdate();
+      });
+
+      function makeNumber(labelText, title, min, max, step, getVal, setVal, onChange) {
+        const lab = document.createElement("label");
+        lab.title = title;
+        lab.appendChild(document.createTextNode(labelText + " "));
+        const input = document.createElement("input");
+        input.type = "number";
+        if (min != null) input.min = String(min);
+        if (max != null) input.max = String(max);
+        if (step != null) input.step = String(step);
+        input.value = String(getVal());
+        input.addEventListener("input", () => {
+          setVal(Number(input.value));
+          onChange();
         });
-
-        modeSelect.addEventListener("change", () => {
-          createOrUpdateHistChart(metricSelect.value);
-        });
-      } catch (err) {
-        showHistError("Erreur lors du chargement des données", err);
+        lab.appendChild(input);
+        return lab;
       }
-    }
 
-    async function initRealtime() {
-      try {
-        setRealtimeStatus("Chargement de la capacité PV et de l'irradiance…");
-
-        const cap = await fetchAntonyCurrentInstalledCapacityKw();
-        if (cap.totalKw <= 0) {
-          setRealtimeStatus(
-            "Puissance PV totale nulle ou indisponible pour Antony.",
-          );
-          return;
-        }
-
-        // Save capacity info for realtime chart (total + par quartier)
-        rtCapTotalKw = cap.totalKw;
-        rtCapTotalNb = cap.totalNb;
-        rtCapPerIris = cap.perIris || [];
-
-        await fetchIrradianceAndUpdate();
-
-        // React to realtime mode toggle (total vs IRIS)
-        const rtModeSelect = document.getElementById("rt-mode-select");
-        if (rtModeSelect) {
-          rtModeSelect.addEventListener("change", () => {
-            createOrUpdateRealtimeChart();
-          });
-        }
-
-        // React to forecast toggle
-        const rtForecastToggle = document.getElementById("rt-forecast-toggle");
-        if (rtForecastToggle) {
-          rtForecastToggle.addEventListener("change", () => {
-            createOrUpdateRealtimeChart();
-          });
-        }
-
-        setInterval(async () => {
+      const ensureDebouncer = () => {
+        if (personalArrayDebouncers.has(arr.id)) return personalArrayDebouncers.get(arr.id);
+        const d = debounce(async () => {
           try {
-            await fetchIrradianceAndUpdate();
+            await fetchIrradianceForArray(arr);
+            debouncedSavePersonalArrays();
+            if (getCurrentRealtimeMode() === "personal") createOrUpdateRealtimeChart();
           } catch (e) {
-            showRealtimeError("Erreur lors de la mise à jour", e);
+            showError(dom.rtStatus, "Erreur lors de la mise à jour (mode personnel)", e);
           }
-        }, RT_REFRESH_INTERVAL_MS);
-      } catch (err) {
-        showRealtimeError("Erreur lors du chargement des données temps réel", err);
-      }
-    }
+        }, 1000);
+        personalArrayDebouncers.set(arr.id, d);
+        return d;
+      };
 
-    // Run both widgets on page load
-    window.addEventListener("DOMContentLoaded", () => {
-      initHist(); // historical ODRE widget (bars)
-      initRealtime(); // irradiance-based real-time widget (line)
+      const onNoFetchChange = () => { debouncedSavePersonalArrays(); debouncedRealtimeChartUpdate(); };
+      const onNeedsFetchChange = () => ensureDebouncer()();
+
+      const p = makeNumber(
+        "Puissance (kWc)",
+        "Puissance crête du champ, en kWc.",
+        0, null, 0.1,
+        () => arr.p_kwc,
+        (v) => { arr.p_kwc = Math.max(0, Number(v) || 0); },
+        onNoFetchChange
+      );
+
+      const tilt = makeNumber(
+        "Inclinaison (°)",
+        "0° = à plat, 90° = vertical.",
+        0, 90, 1,
+        () => arr.tilt_deg,
+        (v) => { arr.tilt_deg = clamp(v, 0, 90); },
+        onNeedsFetchChange
+      );
+
+      const az = makeNumber(
+        "Azimut (°)",
+        "0° = sud, négatif vers l'est, positif vers l'ouest.",
+        -180, 180, 5,
+        () => arr.azimuth_deg,
+        (v) => { arr.azimuth_deg = clamp(v, -180, 180); },
+        onNeedsFetchChange
+      );
+
+      const perf = makeNumber(
+        "Rendement (%)",
+        "Rendement global : pertes onduleur/câbles/ombrage etc. 80–90 % est courant.",
+        10, 120, 1,
+        () => Math.round((Number(arr.perf_factor) || 0) * 100),
+        (v) => { arr.perf_factor = clamp(v, 10, 120) / 100.0; },
+        onNoFetchChange
+      );
+
+      const del = document.createElement("button");
+      del.type = "button";
+      del.textContent = "Supprimer";
+      del.title = "Supprimer ce champ";
+      del.disabled = arrays.length <= 1;
+      del.addEventListener("click", () => {
+        rt.personalArrays = (rt.personalArrays || []).filter(a => a.id !== arr.id);
+        personalArrayDebouncers.delete(arr.id);
+        savePersonalArraysToStorage();
+        renderPersonalArrayControls();
+        if (getCurrentRealtimeMode() === "personal") createOrUpdateRealtimeChart();
+      });
+
+      row.appendChild(name);
+      row.appendChild(p);
+      row.appendChild(tilt);
+      row.appendChild(az);
+      row.appendChild(perf);
+      row.appendChild(del);
+      dom.rtArraysContainer.appendChild(row);
     });
-  </script>
-</body>
-</html>
+  }
+
+  // ------------
+  // Main init
+  // ------------
+
+  async function initHist() {
+    try {
+      setHistStatus("Recherche des années disponibles…");
+      hist.years = await findAvailableYears();
+      setHistStatus(`Années disponibles : ${hist.years.join(", ")}. Chargement des données pour ${NAME_COMMUNE}…`);
+
+      for (const year of hist.years) {
+        hist.dataByYear[year] = await fetchCommuneYearData(year);
+      }
+
+      computeIrisList();
+
+      setHistStatus(`Données chargées pour ${NAME_COMMUNE}. Vous pouvez changer la métrique avec le menu déroulant.`);
+
+      const initialMetric = dom.hMetricSelect ? dom.hMetricSelect.value : "prod_an_kwh";
+      createOrUpdateHistChart(initialMetric);
+
+      if (dom.hMetricSelect) dom.hMetricSelect.addEventListener("change", () => createOrUpdateHistChart(dom.hMetricSelect.value));
+      if (dom.hModeSelect) dom.hModeSelect.addEventListener("change", () => createOrUpdateHistChart(dom.hMetricSelect.value));
+    } catch (err) {
+      showError(dom.hStatus, "Erreur lors du chargement des données", err);
+    }
+  }
+
+  async function initRealtime() {
+    try {
+      setRealtimeStatus("Chargement de la capacité PV et de l'irradiance…");
+
+      const cap = await fetchCommuneCurrentInstalledCapacityKw();
+      if (cap.totalKw <= 0) {
+        setRealtimeStatus(`Capacité PV totale nulle ou indisponible pour ${NAME_COMMUNE}.`);
+        return;
+      }
+
+      rt.capTotalKw = cap.totalKw;
+      rt.capTotalNb = cap.totalNb;
+      rt.capPerIris = cap.perIris || [];
+
+      // Load any saved "Mon installation" arrays before first fetch
+      loadPersonalArraysFromStorage();
+
+      await fetchIrradianceAndTemperatureCommune();
+      await refetchAllPersonalIrradiance();
+
+      function updatePersonalControlsVisibility() {
+        const mode = getCurrentRealtimeMode();
+        if (dom.rtPersonalControls) dom.rtPersonalControls.style.display = (mode === "personal") ? "flex" : "none";
+        if (mode === "personal") renderPersonalArrayControls();
+        createOrUpdateRealtimeChart();
+      }
+
+      if (dom.rtModeSelect) dom.rtModeSelect.addEventListener("change", updatePersonalControlsVisibility);
+      if (dom.rtForecastToggle) dom.rtForecastToggle.addEventListener("change", () => createOrUpdateRealtimeChart());
+
+      if (dom.rtAddArrayBtn) {
+        dom.rtAddArrayBtn.addEventListener("click", async () => {
+          const nextIndex = (rt.personalArrays || []).length + 1;
+          const arr = makeNewPersonalArray(nextIndex);
+          // friendly default: alternate +90 / -90 for quick East/West comparison
+          if (nextIndex % 2 === 0) arr.azimuth_deg = -90;
+          if (nextIndex % 3 === 0) arr.azimuth_deg = +90;
+          rt.personalArrays = (rt.personalArrays || []).concat([arr]);
+          savePersonalArraysToStorage();
+          renderPersonalArrayControls();
+          try {
+            await fetchIrradianceForArray(arr);
+          } catch (e) {
+            showError(dom.rtStatus, "Erreur lors de l'ajout du champ", e);
+          }
+          if (getCurrentRealtimeMode() === "personal") createOrUpdateRealtimeChart();
+        });
+      }
+
+      updatePersonalControlsVisibility();
+
+      setInterval(async () => {
+        try {
+          await fetchIrradianceAndTemperatureCommune();
+          if (getCurrentRealtimeMode() === "personal") {
+            await refetchAllPersonalIrradiance();
+          }
+          createOrUpdateRealtimeChart();
+        } catch (e) {
+          showError(dom.rtStatus, "Erreur lors de la mise à jour", e);
+        }
+      }, RT_REFRESH_INTERVAL_MS);
+    } catch (err) {
+      showError(dom.rtStatus, "Erreur lors du chargement des données temps réel", err);
+    }
+  }
+
+  // Run both widgets on page load.
+  window.addEventListener("DOMContentLoaded", () => {
+    cacheDom();
+    initHist();
+    initRealtime();
+  });
+})();
+</script>

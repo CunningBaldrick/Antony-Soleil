@@ -77,6 +77,7 @@
         <option value="prod_an_kwh">Production annuelle</option>
         <option value="puis_rac_kw">Puissance installée</option>
         <option value="nb_inst">Nombre d'installations</option>
+        <option value="conso_totale_kwh">Consommation annuelle</option>
       </select>
     </div>
 
@@ -180,24 +181,29 @@
   const CALIB_K = 0.52;          // calibration factor, see calibrate.py
 
 
+  const NOCT = 45;       // Nominal operating cell temperature, °C
+  const GAMMA = -0.004;  // Power drop as cell temperature rises: -0.4 %/°C
+
+
+  const CONCURRENCY = 4; // 4–6 is usually polite
+
+
   const RT_PAST_HOURS = 24;
   const RT_FORECAST_HOURS = 24;
   const RT_REFRESH_MINUTES = 17; // Notice new data fairly quickly, while staying polite
   const RT_REFRESH_INTERVAL_MS = RT_REFRESH_MINUTES * 60 * 1000;
 
 
-  const NOCT = 45;       // Nominal operating cell temperature, °C
-  const GAMMA = -0.004;  // Power drop as cell temperature rises: -0.4 %/°C
-
-
   const ODRE_BASE = "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets";
+  const AGENCE_ORE_BASE = "https://opendata.agenceore.fr/api/explore/v2.1/catalog/datasets";
   const OPEN_METEO_BASE = "https://satellite-api.open-meteo.com/v1/archive";
 
 
   const HIST_METRICS = {
-    nb_inst: { label: "Nombre d'installations", unit: "" },
-    puis_rac_kw: { label: "Puissance photovoltaïque raccordée au réseau", unit: "kW" },
-    prod_an_kwh: { label: "Production annuelle vers le réseau", unit: "kWh" },
+    nb_inst: { label: "Nombre d'installations", unit: "", source: "pv" },
+    puis_rac_kw: { label: "Puissance photovoltaïque raccordée au réseau", unit: "kW", source: "pv" },
+    prod_an_kwh: { label: "Production annuelle vers le réseau", unit: "kWh", source: "pv" },
+    conso_totale_kwh: { label: "Consommation annuelle", unit: "kWh", source: "conso" },
   };
 
   const RT_METRICS = {
@@ -246,8 +252,12 @@
 
   const hist = {
     years: [],
-    dataByYear: {},
-    irisList: [], // IRIS codes with data
+    pvByYear: {},
+    consoByYear: {},
+    consoIndexByYear: {}, // year -> Map(codeiris -> { total, byFiliere: Map(filiere -> value) })
+    consoFilieres: [],    // stable list for total chart stacking
+    pvIrisList: [],       // IRIS codes that have PV data (for PV charts)
+    consoIrisList: [],    // IRIS codes that have consumption data (for conso charts)
     chart: null,
   };
 
@@ -291,6 +301,13 @@
   function registreDatasetId(year) {
     const yy = String(year).slice(-2);
     return `registre-national-installation-production-stockage-electricite-agrege-3112${yy}`;
+  }
+
+  function normalizeIrisCode(raw) {
+    if (raw === undefined || raw === null) return null;
+    const s = String(raw).trim();
+    // A true IRIS is a 9-digit code. Turn anything else (e.g., "92002XXXX") into null.
+    return /^\d{9}$/.test(s) ? Number(s) : null;
   }
 
   function irisDisplayName(codeiris) {
@@ -464,7 +481,43 @@
 
     const url = `${base}?${params.toString()}`;
     const json = await fetchJson(url);
-    return json.results || [];
+    const rows = json.results || [];
+    for (const r of rows) r.codeiris = normalizeIrisCode(r.codeiris);
+    return rows;
+  }
+
+  async function fetchCommuneYearConsumptionData(year) {
+    const datasetId = "consommation-annuelle-d-electricite-et-gaz-par-iris";
+    const base = `${AGENCE_ORE_BASE}/${datasetId}/records`;
+
+    const params = new URLSearchParams({
+      where: [
+        `code_commune='${INSEE_COMMUNE}'`,
+        `annee=date'${year}'`,
+      ].join(" AND "),
+      select: [
+        "code_iris as codeiris",
+        "filiere as filiere",
+        "sum(conso_totale_mwh) as conso_totale_mwh",
+      ].join(", "),
+      group_by: "code_iris, filiere",
+      limit: "100",
+    });
+
+    const url = `${base}?${params.toString()}`;
+    const json = await fetchJson(url);
+    const rows = json.results || [];
+
+    // Normalize numeric field
+    for (const r of rows) {
+      const mwh = Number(r.conso_totale_mwh) || 0;
+      // Store everything in kWh to be comparable with PV prod_an_kwh
+      r.conso_totale_kwh = mwh * 1000;
+
+      r.codeiris = normalizeIrisCode(r.codeiris);
+      if (typeof r.filiere !== "string") r.filiere = String(r.filiere || "");
+    }
+    return rows;
   }
 
   async function fetchCommuneCurrentInstalledCapacityKw() {
@@ -601,21 +654,56 @@
   // Data preparation (hist + rt)
   // ------------
 
-  function computeIrisList() {
-    const codes = new Set();
+  function computeIrisLists() {
+    const pvCodes = new Set();
+    const consoCodes = new Set();
+
     for (const yr of hist.years) {
-      const rows = hist.dataByYear[yr] || [];
-      for (const row of rows) codes.add(row.codeiris);
+      const pvRows = hist.pvByYear[yr] || [];
+      for (const row of pvRows) pvCodes.add(row.codeiris);
+
+      const consoRows = hist.consoByYear[yr] || [];
+      for (const row of consoRows) consoCodes.add(row.codeiris);
     }
 
-    const arr = Array.from(codes);
-    arr.sort((a, b) => {
+    const sortIris = (a, b) => {
       if (a === null) return -1;
       if (b === null) return 1;
       return Number(a) - Number(b);
-    });
+    };
 
-    hist.irisList = arr;
+    hist.pvIrisList = Array.from(pvCodes).sort(sortIris);
+    hist.consoIrisList = Array.from(consoCodes).sort(sortIris);
+  }
+
+  function buildConsumptionIndexes() {
+    // Build:
+    // - hist.consoIndexByYear[year] = Map(codeiris -> { total, byFiliere: Map })
+    // - hist.consoFilieres = stable sorted list of filiere labels appearing in the selected year range
+    const filieres = new Set();
+    hist.consoIndexByYear = {};
+
+    for (const yr of hist.years) {
+      const rows = hist.consoByYear[yr] || [];
+      const byIris = new Map();
+
+      for (const r of rows) {
+        const code = (r.codeiris === undefined) ? null : r.codeiris;
+        const fil = r.filiere || "Inconnu";
+        filieres.add(fil);
+
+        if (!byIris.has(code)) byIris.set(code, { total: 0, byFiliere: new Map() });
+        const entry = byIris.get(code);
+
+        const v = Number(r.conso_totale_kwh) || 0;
+        entry.total += v;
+        entry.byFiliere.set(fil, (entry.byFiliere.get(fil) || 0) + v);
+      }
+
+      hist.consoIndexByYear[yr] = byIris;
+    }
+
+    hist.consoFilieres = Array.from(filieres).sort((a, b) => a.localeCompare(b));
   }
 
   function getValue(row, metricKey) {
@@ -680,30 +768,65 @@
   function buildHistDatasets(metricKey, mode) {
     const metricDef = HIST_METRICS[metricKey];
 
-    if (mode === "total") {
-      const values = hist.years.map((yr) => {
-        const rows = hist.dataByYear[yr] || [];
-        return rows.reduce((sum, row) => sum + getValue(row, metricKey), 0);
+    // PV metrics
+    if (metricDef?.source === "pv") {
+      if (mode === "total") {
+        const values = hist.years.map((yr) => {
+          const rows = hist.pvByYear[yr] || [];
+          return rows.reduce((sum, row) => sum + getValue(row, metricKey), 0);
+        });
+        return {
+          datasets: [{ label: `Total ${NAME_COMMUNE}`, data: values, stack: "stack1" }],
+          metricLabel: metricDef.label,
+          metricUnit: metricDef.unit,
+        };
+      }
+
+      const datasets = hist.pvIrisList.map((code) => {
+        const values = hist.years.map((yr) => {
+          const rows = hist.pvByYear[yr] || [];
+          const row = rows.find((r) => r.codeiris === code);
+          return row ? getValue(row, metricKey) : 0;
+        });
+        return { label: irisDisplayName(code), data: values, stack: "stack1" };
       });
 
-      return {
-      datasets: [{ label: `Total ${NAME_COMMUNE}`, data: values, stack: "stack1" }],
-        metricLabel: metricDef.label,
-        metricUnit: metricDef.unit,
-      };
+      return { datasets, metricLabel: metricDef.label, metricUnit: metricDef.unit };
     }
 
-    const datasets = hist.irisList.map((code) => {
-      const values = hist.years.map((yr) => {
-        const rows = hist.dataByYear[yr] || [];
-        const row = rows.find((r) => r.codeiris === code);
-        return row ? getValue(row, metricKey) : 0;
+    // Consumption metric
+    if (metricDef?.source === "conso") {
+      if (mode === "total") {
+        // Stacked: one dataset per filiere (Electricité / Gaz)
+        const filieres = hist.consoFilieres || [];
+        const datasets = filieres.map((fil) => {
+          const values = hist.years.map((yr) => {
+            const rows = hist.consoByYear[yr] || [];
+            let s = 0;
+            for (const r of rows) if ((r.filiere || "") === fil) s += Number(r.conso_totale_kwh) || 0;
+            return s;
+          });
+          return { label: fil, data: values, stack: "stack1" };
+        });
+        return { datasets, metricLabel: metricDef.label, metricUnit: metricDef.unit };
+      }
+
+      // IRIS mode: keep the same visual shape as PV (one dataset per IRIS),
+      // but sum over filiere; put filiere breakdown in tooltip.
+      const datasets = hist.consoIrisList.map((code) => {
+        const values = hist.years.map((yr) => {
+          const byIris = hist.consoIndexByYear?.[yr];
+          const entry = byIris ? byIris.get(code) : null;
+          return entry ? (Number(entry.total) || 0) : 0;
+        });
+        return { label: irisDisplayName(code), data: values, stack: "stack1", _codeiris: code };
       });
 
-      return { label: irisDisplayName(code), data: values, stack: "stack1" };
-    });
+      return { datasets, metricLabel: metricDef.label, metricUnit: metricDef.unit };
+    }
 
-    return { datasets, metricLabel: metricDef.label, metricUnit: metricDef.unit };
+    // Fallback (shouldn't happen)
+    return { datasets: [], metricLabel: metricDef?.label || metricKey, metricUnit: metricDef?.unit || "" };
   }
 
   function intersectTimesSorted(seriesList) {
@@ -850,6 +973,11 @@
     }
   }
 
+  function formatNumber(value, digits = 0) {
+    const n = Number(value || 0);
+    return new Intl.NumberFormat(undefined, { maximumFractionDigits: digits }).format(n);
+  }
+
   function createOrUpdateHistChart(metricKey) {
     if (!dom.histCanvas) return;
     const ctx = dom.histCanvas.getContext("2d");
@@ -857,7 +985,39 @@
 
     const { datasets, metricLabel, metricUnit } = buildHistDatasets(metricKey, mode);
     const yLabel = metricUnit ? `${metricLabel} (${metricUnit})` : metricLabel;
-    const stacked = (mode === "iris")
+
+    const isConso = (HIST_METRICS?.[metricKey]?.source === "conso");
+    const stacked = isConso || (mode === "iris")
+
+    const tooltipCallbacks = {
+      label: (context) => {
+        const label = context.dataset.label || "";
+        const value = context.parsed.y;
+        const unit = metricUnit ? ` ${metricUnit}` : "";
+        return `${label}: ${formatNumber(value)}${unit}`;
+      },
+    };
+
+    // Extra tooltip detail for consumption in IRIS mode:
+    // show filiere breakdown in the tooltip footer.
+    if (isConso && mode === "iris") {
+      tooltipCallbacks.footer = (items) => {
+        if (!items || !items.length) return "";
+        const it = items[0];
+        const year = (it?.chart?.data?.labels || [])[it.dataIndex];
+        const codeiris = it?.dataset?._codeiris;
+        const byIris = hist.consoIndexByYear?.[year];
+        const entry = byIris ? byIris.get(codeiris) : null;
+        if (!entry || !entry.byFiliere) return "";
+
+        const lines = [];
+        for (const fil of (hist.consoFilieres || [])) {
+          const v = entry.byFiliere.get(fil) || 0;
+          if (v > 0) lines.push(`${fil}: ${formatNumber(v)} ${metricUnit}`);
+        }
+        return lines.length ? lines : "";
+      };
+    }
 
     if (hist.chart) {
       hist.chart.data.labels = hist.years;
@@ -866,6 +1026,7 @@
       hist.chart.options.scales.y.title.text = yLabel;
       hist.chart.options.scales.x.stacked = stacked;
       hist.chart.options.scales.y.stacked = stacked;
+      hist.chart.options.plugins.tooltip.callbacks = tooltipCallbacks;
       hist.chart.update();
       return;
     }
@@ -878,13 +1039,7 @@
         plugins: {
           title: { display: true, text: metricLabel },
           tooltip: {
-            callbacks: {
-              label: (context) => {
-                const label = context.dataset.label || "";
-                const value = context.parsed.y;
-                return `${label}: ${value.toLocaleString("fr-FR")}`;
-              },
-            },
+            callbacks: tooltipCallbacks,
           },
         },
         scales: {
@@ -1181,17 +1336,41 @@
   // Main init
   // ------------
 
+  async function mapWithConcurrency(items, limit, mapper) {
+    const results = new Array(items.length);
+    let i = 0;
+
+    const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (true) {
+        const idx = i++;
+        if (idx >= items.length) break;
+        results[idx] = await mapper(items[idx], idx);
+      }
+    });
+
+    await Promise.all(workers);
+    return results;
+  }
+
   async function initHist() {
     try {
       setHistStatus("Recherche des années disponibles…");
       hist.years = await findAvailableYears();
       setHistStatus(`Années disponibles : ${hist.years.join(", ")}. Chargement des données pour ${NAME_COMMUNE}…`);
 
-      for (const year of hist.years) {
-        hist.dataByYear[year] = await fetchCommuneYearData(year);
-      }
+      await mapWithConcurrency(hist.years, CONCURRENCY, async (year) => {
+        // Fetch PV + consumption for the same year (year range driven by PV availability).
+        const [pvRows, consoRows] = await Promise.all([
+          fetchCommuneYearData(year),
+          fetchCommuneYearConsumptionData(year).catch(() => []), // be resilient if a year is missing
+        ]);
 
-      computeIrisList();
+        hist.pvByYear[year] = pvRows || [];
+        hist.consoByYear[year] = consoRows || [];
+      });
+
+      computeIrisLists();
+      buildConsumptionIndexes();
 
       setHistStatus(`Données chargées pour ${NAME_COMMUNE}. Vous pouvez changer la métrique avec le menu déroulant.`);
 

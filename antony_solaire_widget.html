@@ -917,6 +917,7 @@
 
         const data = irrMerged.map(pt => CALIB_K * capKw * ((pt.gti_w_per_m2 || 0) / 1000.0));
 
+        const isFirst = datasets.length === 0;
         datasets.push({
           label: name,
           data,
@@ -924,7 +925,7 @@
           tension: 0.2,
           pointRadius: 0,
           pointHitRadius: 10,
-          fill: true,
+          fill: isFirst ? 'origin' : '-1',
           stack: "rt-iris",
           showInLegend: true,
           _forecastStartIndex: tl.nPast,
@@ -952,6 +953,7 @@
         const irrMerged = mergeByTimes(arr.irrPast, arr.irrForecast, tl.pastTimes, tl.forecastTimes);
         const pts = computePersonalSeriesForArray(arr, irrMerged, tempMerged);
 
+        const isFirst = datasets.length === 0;
         datasets.push({
           label: arr.name || "Champ",
           baseLabel: arr.name || "Champ",
@@ -961,7 +963,7 @@
           tension: 0.2,
           pointRadius: 0,
           pointHitRadius: 10,
-          fill: true,
+          fill: isFirst ? 'origin' : '-1',
           stack: "rt-personal",
           showInLegend: true,
           _forecastStartIndex: tl.nPast,

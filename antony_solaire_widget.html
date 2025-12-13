@@ -1093,6 +1093,7 @@
           plugins: {
             title: { display: true, text: rtMetric.label },
             tooltip: {
+              itemSort: (a, b) => b.datasetIndex - a.datasetIndex,
               callbacks: {
                 title: (items) => {
                   if (!items || !items.length) return "";

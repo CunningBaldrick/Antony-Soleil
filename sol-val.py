@@ -275,6 +275,7 @@ def dump_antony() -> None:
     YEAR_LAST  = 2024
 
     codes_iris = set()
+    all_fields = set()
     year_data = {}
     for year in range(YEAR_FIRST, YEAR_LAST + 1):
         data = get_antony_odre_all(year)
@@ -293,6 +294,10 @@ def dump_antony() -> None:
                 print(f"Skipping code technologie {code_technologie}")
                 continue
 
+            for key, value in row.items():
+                if value:
+                    all_fields.add(key)
+
             # If a site is disconnected, would the capacity be set to zero?
             assert row.get('datederaccordement') is None
 
@@ -301,8 +306,9 @@ def dump_antony() -> None:
 
     codes_iris = sorted(list(codes_iris), key=lambda x: (x is not None, x))
 
+#    fields = sorted(all_fields)
 #    fields = ['codeiris', 'dateraccordement', 'datederaccordement', 'datemiseenservice', 'tensionraccordement', 'puismaxinstallee', 'puismaxrac', 'nbinstallations', 'energieannuelleglissanteinjectee', 'energieannuelleinjectee', 'maxpuis', 'datemiseenservice_date']
-    fields = ['nbinstallations', 'puismaxrac', 'energieannuelleglissanteinjectee', 'energieannuelleinjectee', 'nominstallation']
+    fields = ['nbinstallations', 'puismaxrac', 'energieannuelleglissanteinjectee', 'energieannuelleinjectee', 'nominstallation', 'tensionraccordement']
     print('code iris\tyear\t' + '\t'.join(fields))
     for code_iris in codes_iris:
         print(code_iris or "?????????")

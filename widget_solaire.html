@@ -121,7 +121,7 @@
         <div style="display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap;">
           <button type="button" id="rt-add-array">+ Ajouter un champ</button>
           <span style="font-size:0.9rem; color:#555;">
-            Astuce : mettez par ex. 2 champs (Est / Ouest) pour visualiser l'empilement.
+            Astuce : mettez par exemple deux champs (Est / Ouest) pour visualiser la superposition.
           </span>
         </div>
       </div>
@@ -139,11 +139,6 @@
 
   const NAME_COMMUNE = "Antony"
   const INSEE_COMMUNE = "92002"; // Antony
-
-  // Satellite resolution is ~5km and Antony is about 5km across, so use a
-  // single reference location somewhere in the middle for all of Antony.
-  const ANT_LAT = 48.75363; // The town hall is in the middle of Antony.
-  const ANT_LON = 2.29589;
 
   const IRIS_LABELS = { // Antony IRIS names.  See iris-list.py
     920020101: "Parc de Sceaux",
@@ -194,8 +189,9 @@
   const RT_REFRESH_INTERVAL_MS = RT_REFRESH_MINUTES * 60 * 1000;
 
 
-  const ODRE_BASE = "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets";
   const AGENCE_ORE_BASE = "https://opendata.agenceore.fr/api/explore/v2.1/catalog/datasets";
+  const ODRE_BASE = "https://odre.opendatasoft.com/api/explore/v2.1/catalog/datasets";
+  const ODS_PUBLIC_BASE = "https://public.opendatasoft.com/api/explore/v2.1/catalog/datasets";
   const OPEN_METEO_BASE = "https://satellite-api.open-meteo.com/v1/archive";
 
 
@@ -262,6 +258,10 @@
   };
 
   const rt = {
+    // Commune location
+    communeLat: null,
+    communeLon: null,
+
     // Commune irradiance
     irrPastCommune: [],
     irrForecastCommune: [],
@@ -565,6 +565,40 @@
     }
 
     return { totalKw, totalNb, perIris: rows };
+  }
+
+  async function fetchCommuneLocation() {
+    const datasetId = "georef-france-commune";
+    const base = `${ODS_PUBLIC_BASE}/${datasetId}/records`;
+
+    const params = new URLSearchParams({
+      where: `com_code='${INSEE_COMMUNE}'`,
+      select: "geo_point_2d",
+      limit: "1",
+    });
+
+    const url = `${base}?${params.toString()}`;
+    const json = await fetchJson(url);
+    const rows = json.results || [];
+
+    if (!rows.length) {
+      throw new Error(`Aucune commune trouvée pour le code INSEE ${INSEE_COMMUNE}`);
+    }
+
+    const row = rows[0];
+    const point = row.geo_point_2d;
+
+    // In Explore v2.1, geo_point_2d is a record { lon, lat } in JSON.
+    if (!point || typeof point.lat !== "number" || typeof point.lon !== "number") {
+      throw new Error(
+        `Coordonnées géographiques introuvables pour la commune ${INSEE_COMMUNE}`
+      );
+    }
+
+    return {
+      lat: Number(point.lat),
+      lon: Number(point.lon),
+    };
   }
 
   async function fetchIrradianceSeries(lat, lon, tiltDeg, azimuthDeg, pastHours, forecastHours) {
@@ -1062,6 +1096,15 @@
     return t.slice(0, 5);
   }
 
+  function formatCommuneLocation() {
+    const lat = rt.communeLat;
+    const lon = rt.communeLon;
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return "";
+    // 4 decimals ≈ 10–20 m, plenty for sanity-checking
+    return `lat=${lat.toFixed(4)}, lon=${lon.toFixed(4)}`;
+  }
+
   function createOrUpdateRealtimeChart() {
     if (!dom.rtCanvas) return;
     const ctx = dom.rtCanvas.getContext("2d");
@@ -1116,7 +1159,7 @@
                   const t = (ds.panelTemps || [])[context.dataIndex];
                   let msg = `${name} : ${v.toFixed(1)} kW`;
                   if (typeof t === "number" && !Number.isNaN(t)) {
-                    msg += ` (température panneau ≈ ${t.toFixed(1)} °C)`;
+                    msg += ` (température du panneau ≈ ${t.toFixed(1)} °C)`;
                   }
                   return msg;
                 },
@@ -1173,13 +1216,16 @@
     if (mode === "personal") {
       const n = (rt.personalArrays || []).length;
       const sumPkwc = (rt.personalArrays || []).reduce((s, a) => s + (Number(a.p_kwc) || 0), 0);
+      const locString = formatCommuneLocation();
       setRealtimeStatus(
-        `Estimation basée sur vos paramètres (${n} champ${n > 1 ? "s" : ""}, total = ${sumPkwc.toFixed(1)} kWc). ` +
+        `Estimation basée sur vos paramètres (${n} champ${n > 1 ? "s" : ""}, ` +
+        `total = ${sumPkwc.toFixed(1)} kWc, ${locString}). ` +
         `Mise à jour environ une fois par heure.`
       );
     } else {
       setRealtimeStatus(
-        `Capacité photovoltaïque installée à ${NAME_COMMUNE} : ${rt.capTotalKw.toFixed(1)} kWc (${rt.capTotalNb} installations). ` +
+        `Capacité photovoltaïque installée à ${NAME_COMMUNE} : ` +
+        `${rt.capTotalKw.toFixed(1)} kWc (${rt.capTotalNb} installations). ` +
         `Mise à jour environ une fois par heure.`
       );
     }
@@ -1190,9 +1236,14 @@
   // ------------
 
   async function fetchIrradianceAndTemperatureCommune() {
+    if (rt.communeLat == null || rt.communeLon == null) return;
+
     const [irr, temp] = await Promise.all([
-      fetchIrradianceSeries(ANT_LAT, ANT_LON, PANEL_TILT_DEG, PANEL_AZIMUTH_DEG, RT_PAST_HOURS, RT_FORECAST_HOURS),
-      fetchTemperatureSeries(ANT_LAT, ANT_LON, RT_PAST_HOURS, RT_FORECAST_HOURS),
+      fetchIrradianceSeries(rt.communeLat, rt.communeLon,
+                            PANEL_TILT_DEG, PANEL_AZIMUTH_DEG,
+                            RT_PAST_HOURS, RT_FORECAST_HOURS),
+      fetchTemperatureSeries(rt.communeLat, rt.communeLon,
+                             RT_PAST_HOURS, RT_FORECAST_HOURS),
     ]);
 
     rt.irrPastCommune = irr.past;
@@ -1202,10 +1253,12 @@
   }
 
   async function fetchIrradianceForArray(arr) {
+    if (rt.communeLat == null || rt.communeLon == null) return;
+
     const tilt = clamp(arr.tilt_deg, 0, 90);
     const az = clamp(arr.azimuth_deg, -180, 180);
     const irr = await fetchIrradianceSeries(
-      ANT_LAT, ANT_LON,
+      rt.communeLat, rt.communeLon,
       tilt,
       az,
       RT_PAST_HOURS, RT_FORECAST_HOURS
@@ -1233,7 +1286,7 @@
       name.className = "rt-array-name";
       name.value = arr.name || `Champ ${idx + 1}`;
       name.placeholder = `Champ ${idx + 1}`;
-      name.title = "Nom du champ (ex. Est, Ouest, Toit garage…)";
+      name.title = "Nom du champ (ex. Est, Ouest, toit du garage…)";
       name.addEventListener("change", () => {
         arr.name = name.value || `Champ ${idx + 1}`;
         debouncedSavePersonalArrays();
@@ -1375,7 +1428,7 @@
       computeIrisLists();
       buildConsumptionIndexes();
 
-      setHistStatus(`Données chargées pour ${NAME_COMMUNE}. Vous pouvez changer la métrique avec le menu déroulant.`);
+      setHistStatus(`Données chargées pour ${NAME_COMMUNE}. Vous pouvez changer l’indicateur avec le menu déroulant.`);
 
       const initialMetric = dom.hMetricSelect ? dom.hMetricSelect.value : "prod_an_kwh";
       createOrUpdateHistChart(initialMetric);
@@ -1389,11 +1442,17 @@
 
   async function initRealtime() {
     try {
-      setRealtimeStatus("Chargement de la capacité PV et de l'irradiance…");
+      setRealtimeStatus("Chargement des coordonnées géographiques…");
+
+      const { lat, lon } = await fetchCommuneLocation();
+      rt.communeLat = lat;
+      rt.communeLon = lon;
+
+      setRealtimeStatus("Chargement de la capacité PV…");
 
       const cap = await fetchCommuneCurrentInstalledCapacityKw();
       if (cap.totalKw <= 0) {
-        setRealtimeStatus(`Capacité PV totale nulle ou indisponible pour ${NAME_COMMUNE}.`);
+        setRealtimeStatus(`Capacité photovoltaïque totale nulle ou indisponible pour ${NAME_COMMUNE}.`);
         return;
       }
 
@@ -1404,6 +1463,7 @@
       // Load any saved "Mon installation" arrays before first fetch
       loadPersonalArraysFromStorage();
 
+      setRealtimeStatus("Chargement des données météo…");
       await fetchIrradianceAndTemperatureCommune();
       await refetchAllPersonalIrradiance();
 

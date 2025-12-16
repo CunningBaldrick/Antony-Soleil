@@ -140,36 +140,6 @@
   const NAME_COMMUNE = "Antony"
   const INSEE_COMMUNE = "92002"; // Antony
 
-  const IRIS_LABELS = { // Antony IRIS names.  See iris-list.py
-    920020101: "Parc de Sceaux",
-    920020102: "Nouveau Cimetière",
-    920020103: "La Fontaine",
-    920020104: "U.S. Métro",
-    920020105: "Croix de Berny",
-    920020106: "Velpeau",
-    920020107: "Jean Moulin",
-    920020201: "11 Novembre",
-    920020202: "Guillebaud",
-    920020203: "Chemin de Fer",
-    920020204: "Bois de l'Aurore",
-    920020205: "Zone d'Activités",
-    920020301: "Pajeaud",
-    920020302: "Parvis du Breuil et de la Bièvre",
-    920020303: "Fontaine Michalon",
-    920020304: "Conservatoire Darius Milhaud",
-    920020305: "Grand l",
-    920020306: "Lionel Terray",
-    920020307: "Fontaine Mouton",
-    920020308: "Baconnets",
-    920020401: "Parc Heller",
-    920020402: "Céline",
-    920020403: "Hôtel de Ville",
-    920020404: "Clinique du Bois de Verrières",
-    920020405: "Ancien Cimetière",
-    920020406: "Bas Graviers",
-    920020407: "Les Godets",
-  };
-
 
   const PANEL_TILT_DEG = 30;     // typical rooftop tilt
   const PANEL_AZIMUTH_DEG = 0;   // 0 = south
@@ -246,6 +216,8 @@
   // State
   // ------------
 
+  let irisLabels = Object.create(null);
+
   const hist = {
     years: [],
     pvByYear: {},
@@ -312,7 +284,7 @@
 
   function irisDisplayName(codeiris) {
     if (codeiris === null || codeiris === undefined) return "Quartier inconnu";
-    if (IRIS_LABELS[codeiris]) return IRIS_LABELS[codeiris];
+    if (irisLabels[codeiris]) return irisLabels[codeiris];
     return `Secteur ${codeiris}`;
   }
 
@@ -430,12 +402,77 @@
     return res.json();
   }
 
+  // Generic helper for Opendatasoft Explore v2.1 pagination.
+  // baseUrl: ".../datasets/<dataset_id>/records"
+  // baseParams: plain object of query parameters (where, select, group_by, order_by, etc.)
+  // pageSize: per-page limit (API max is 100).
+  // maxPages: safety cap to avoid infinite loops if total_count is missing or inconsistent.
+  async function fetchAllExploreRecords(baseUrl, baseParams, pageSize = 100, maxPages = 20) {
+    const all = [];
+    let offset = 0;
+    let totalCount = null;
+
+    for (let page = 0; page < maxPages; page++) {
+      const params = new URLSearchParams(baseParams || {});
+      params.set("limit", String(pageSize));
+      if (offset > 0) params.set("offset", String(offset));
+
+      const url = `${baseUrl}?${params.toString()}`;
+      const json = await fetchJson(url);
+      const rows = json.results || [];
+
+      all.push(...rows);
+
+      const got = rows.length;
+      if (typeof json.total_count === "number") {
+        totalCount = json.total_count;
+      }
+
+      // Stop when:
+      // - we got less than a full page, or
+      // - total_count says we've fetched everything.
+      if (got < pageSize) break;
+      if (totalCount != null && all.length >= totalCount) break;
+
+      offset += got;
+    }
+
+    return all;
+  }
+
   async function datasetExists(datasetId) {
     const url = `${ODRE_BASE}/${datasetId}/records?limit=1`;
     const res = await fetch(url);
     if (res.status === 404) return false;
     if (!res.ok) throw new Error(`HTTP ${res.status} probing dataset ${datasetId}`);
     return true;
+  }
+
+  async function fetchCommuneIrisLabels() {
+    const datasetId = "georef-france-iris";
+    const base = `${ODS_PUBLIC_BASE}/${datasetId}/records`;
+
+    const baseParams = {
+      where: `com_code='${INSEE_COMMUNE}'`,
+      select: "iris_code, iris_name",
+      order_by: "iris_code",
+    };
+
+    const rows = await fetchAllExploreRecords(base, baseParams, 100);
+
+    const labels = Object.create(null);
+
+    for (const row of rows) {
+      const code = normalizeIrisCode(row.iris_code);
+      if (code === null) continue;
+
+      const name = String(row.iris_name ?? "").trim();
+      if (!name) continue;  // let irisDisplayName handle the fallback
+
+      labels[code] = name;
+    }
+
+    return labels;
   }
 
   async function findAvailableYears(firstYear = 2017, probeFromYear = 2025, maxFutureYears = 1) {
@@ -461,7 +498,7 @@
 
     const energyField = year < 2020 ? "energieannuelleinjectee" : "energieannuelleglissanteinjectee";
 
-    const params = new URLSearchParams({
+    const baseParams = {
       where: [
         `codeinseecommune='${INSEE_COMMUNE}'`,
         "codefiliere like 'SOLAI'",
@@ -476,13 +513,15 @@
         `sum(${energyField}) as prod_an_kwh`,
       ].join(", "),
       group_by: "codeiris",
-      limit: "100",
-    });
+      order_by: "codeiris",
+    };
 
-    const url = `${base}?${params.toString()}`;
-    const json = await fetchJson(url);
-    const rows = json.results || [];
-    for (const r of rows) r.codeiris = normalizeIrisCode(r.codeiris);
+    const rows = await fetchAllExploreRecords(base, baseParams, 100);
+
+    for (const r of rows) {
+      r.codeiris = normalizeIrisCode(r.codeiris);
+    }
+
     return rows;
   }
 
@@ -490,7 +529,7 @@
     const datasetId = "consommation-annuelle-d-electricite-et-gaz-par-iris";
     const base = `${AGENCE_ORE_BASE}/${datasetId}/records`;
 
-    const params = new URLSearchParams({
+    const baseParams = {
       where: [
         `code_commune='${INSEE_COMMUNE}'`,
         `annee=date'${year}'`,
@@ -501,22 +540,19 @@
         "sum(conso_totale_mwh) as conso_totale_mwh",
       ].join(", "),
       group_by: "code_iris, filiere",
-      limit: "100",
-    });
+      order_by: "code_iris, filiere",
+    };
 
-    const url = `${base}?${params.toString()}`;
-    const json = await fetchJson(url);
-    const rows = json.results || [];
+    const rows = await fetchAllExploreRecords(base, baseParams, 100);
 
-    // Normalize numeric field
     for (const r of rows) {
       const mwh = Number(r.conso_totale_mwh) || 0;
       // Store everything in kWh to be comparable with PV prod_an_kwh
       r.conso_totale_kwh = mwh * 1000;
-
       r.codeiris = normalizeIrisCode(r.codeiris);
       if (typeof r.filiere !== "string") r.filiere = String(r.filiere || "");
     }
+
     return rows;
   }
 
@@ -524,7 +560,7 @@
     const datasetId = "registre-national-installation-production-stockage-electricite-agrege";
     const base = `${ODRE_BASE}/${datasetId}/records`;
 
-    const params = new URLSearchParams({
+    const baseParams = {
       where: [
         `codeinseecommune='${INSEE_COMMUNE}'`,
         "codefiliere like 'SOLAI'",
@@ -545,12 +581,10 @@
         "sum(nbinstallations) as nb_inst",
       ].join(", "),
       group_by: "codeiris",
-      limit: "100",
-    });
+      order_by: "codeiris",
+    };
 
-    const url = `${base}?${params.toString()}`;
-    const json = await fetchJson(url);
-    const rows = json.results || [];
+    const rows = await fetchAllExploreRecords(base, baseParams, 100);
 
     let totalKw = 0;
     let totalNb = 0;
@@ -1408,6 +1442,15 @@
     return results;
   }
 
+  async function initCommune() {
+    try {
+      irisLabels = await fetchCommuneIrisLabels();
+    } catch (e) {
+      console.warn("Impossible de charger les noms d'IRIS :", e);
+      // Leave irisLabels empty; irisDisplayName will fall back
+    }
+  }
+
   async function initHist() {
     try {
       setHistStatus("Recherche des années disponibles…");
@@ -1515,8 +1558,9 @@
   }
 
   // Run both widgets on page load.
-  window.addEventListener("DOMContentLoaded", () => {
+  window.addEventListener("DOMContentLoaded", async () => {
     cacheDom();
+    await initCommune(); // Wait for common data used everywhere to load.
     initHist();
     initRealtime();
   });

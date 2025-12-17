@@ -68,7 +68,18 @@
   </style>
 </head>
 <body>
-  <h2>Antony – historique des installations photovoltaïques</h2>
+  <div class="controls">
+    <div>
+      <label for="dep-select">Département :</label>
+      <select id="dep-select"></select>
+    </div>
+    <div>
+      <label for="commune-select">Commune :</label>
+      <select id="commune-select"></select>
+    </div>
+  </div>
+
+  <h2><span id="commune-name-hist">Antony</span> – historique des installations photovoltaïques</h2>
 
   <div class="controls">
     <div>
@@ -85,7 +96,7 @@
       <label for="h-mode-select">Découpage :</label>
       <select id="h-mode-select">
         <option value="iris">Par quartier</option>
-        <option value="total">Total Antony</option>
+        <option value="total">Total de la commune</option>
       </select>
     </div>
   </div>
@@ -94,13 +105,13 @@
 
   <canvas id="historyChart" width="800" height="400"></canvas>
 
-  <h2>Antony – production photovoltaïque en temps quasi réel</h2>
+  <h2><span id="commune-name-rt">Antony</span> – production photovoltaïque en temps quasi réel</h2>
 
   <div class="controls">
     <div>
       <label for="rt-mode-select">Affichage :</label>
       <select id="rt-mode-select">
-        <option value="total">Total Antony</option>
+        <option value="total">Total de la commune</option>
         <option value="iris">Par quartier</option>
         <option value="personal">Mon installation</option>
       </select>
@@ -137,9 +148,9 @@
   // Configuration / constants
   // -------------------------
 
-  const NAME_COMMUNE = "Antony"
-  const INSEE_COMMUNE = "92002"; // Antony
-
+  const DEFAULT_COMMUNE_NAME = "Antony"; // Widget developed by Antony-Soleil
+  const DEFAULT_INSEE_COMMUNE = "92002"; // Antony
+  const DEFAULT_DEP_CODE = "92";         // Hauts-de-Seine
 
   const PANEL_TILT_DEG = 30;     // typical rooftop tilt
   const PANEL_AZIMUTH_DEG = 0;   // 0 = south
@@ -197,6 +208,11 @@
   const $ = (id) => document.getElementById(id);
 
   function cacheDom() {
+    dom.depSelect = $("dep-select");
+    dom.communeSelect = $("commune-select");
+    dom.histTitleCommune = $("commune-name-hist");
+    dom.rtTitleCommune = $("commune-name-rt");
+
     dom.hMetricSelect = $("h-metric-select");
     dom.hModeSelect = $("h-mode-select");
     dom.hStatus = $("h-status");
@@ -216,6 +232,21 @@
   // State
   // ------------
 
+  let communeUiListenersAttached = false;
+
+  const geo = {
+    departments: [],               // { depCode, depName, regName }
+    communesByDep: new Map(),      // depCode -> [{ insee, name }]
+  };
+
+  const currentCommune = {
+    insee: DEFAULT_INSEE_COMMUNE, // Commune or arrondissement code
+    name: DEFAULT_COMMUNE_NAME,
+    depCode: DEFAULT_DEP_CODE,
+    depName: null,
+    regName: null,
+  };
+
   let irisLabels = Object.create(null);
 
   const hist = {
@@ -227,6 +258,7 @@
     pvIrisList: [],       // IRIS codes that have PV data (for PV charts)
     consoIrisList: [],    // IRIS codes that have consumption data (for conso charts)
     chart: null,
+    listenersAttached: false,
   };
 
   const rt = {
@@ -262,6 +294,9 @@
     ],
 
     chart: null,
+    refreshTimerId: null,
+    listenersAttached: false,
+    personalLoaded: false,
   };
 
   const personalArrayDebouncers = new Map(); // arrayId -> debounced fn
@@ -269,11 +304,6 @@
   // ------------
   // Utilities
   // ------------
-
-  function registreDatasetId(year) {
-    const yy = String(year).slice(-2);
-    return `registre-national-installation-production-stockage-electricite-agrege-3112${yy}`;
-  }
 
   function normalizeIrisCode(raw) {
     if (raw === undefined || raw === null) return null;
@@ -286,6 +316,11 @@
     if (codeiris === null || codeiris === undefined) return "Quartier inconnu";
     if (irisLabels[codeiris]) return irisLabels[codeiris];
     return `Secteur ${codeiris}`;
+  }
+
+  function registreDatasetId(year) {
+    const yy = String(year).slice(-2);
+    return `registre-national-installation-production-stockage-electricite-agrege-3112${yy}`;
   }
 
   function setStatus(el, msg) {
@@ -305,6 +340,120 @@
     setStatus(el, `${prefix} : ${err.message}`);
   }
 
+  function updateCommuneTitles() {
+    if (dom.histTitleCommune) dom.histTitleCommune.textContent = currentCommune.name;
+    if (dom.rtTitleCommune) dom.rtTitleCommune.textContent = currentCommune.name;
+    if (typeof document !== "undefined") {
+      document.title = `${currentCommune.name} – Widget Photovoltaïque`;
+    }
+  }
+
+  function updateCurrentCommuneDepFromCode(depCode) {
+    const dep = geo.departments.find(d => d.depCode === depCode);
+    if (dep) {
+      currentCommune.depCode = dep.depCode;
+      currentCommune.depName = dep.depName;
+      currentCommune.regName = dep.regName;
+    } else {
+      currentCommune.depCode = depCode;
+    }
+  }
+
+  function populateDepSelect() {
+    if (!dom.depSelect) return;
+    dom.depSelect.textContent = "";
+
+    geo.departments.forEach(dep => {
+      const opt = document.createElement("option");
+      opt.value = dep.depCode;
+      opt.textContent = `${dep.depCode} – ${dep.depName} (${dep.regName})`;
+      dom.depSelect.appendChild(opt);
+    });
+
+    const wanted = currentCommune.depCode || (geo.departments[0] && geo.departments[0].depCode);
+    if (wanted) dom.depSelect.value = wanted;
+  }
+
+  async function populateCommuneSelectForCurrentDep() {
+    if (!dom.depSelect || !dom.communeSelect) return;
+
+    const depCode = dom.depSelect.value;
+    updateCurrentCommuneDepFromCode(depCode);
+
+    const communes = await fetchCommunesInDepartment(depCode);
+
+    dom.communeSelect.textContent = "";
+
+    communes.forEach(c => {
+      const opt = document.createElement("option");
+      opt.value = c.insee;
+      opt.textContent = c.name;
+      dom.communeSelect.appendChild(opt);
+    });
+
+    let targetInsee = currentCommune.insee;
+    if (!communes.some(c => c.insee === targetInsee)) {
+      targetInsee = communes.length ? communes[0].insee : null;
+    }
+
+    if (targetInsee) {
+      dom.communeSelect.value = targetInsee;
+      const selected = communes.find(c => c.insee === targetInsee);
+      if (selected) {
+        currentCommune.insee = selected.insee;
+        currentCommune.name = selected.name;
+      }
+    }
+  }
+
+  function attachCommuneUiListeners() {
+    if (communeUiListenersAttached) return;
+    communeUiListenersAttached = true;
+
+    if (dom.depSelect) {
+      dom.depSelect.addEventListener("change", () => {
+        (async () => {
+          try {
+            await populateCommuneSelectForCurrentDep();
+            updateCommuneTitles();
+            await reloadForCurrentCommune();
+          } catch (e) {
+            console.error("Erreur lors du changement de département", e);
+          }
+        })();
+      });
+    }
+
+    if (dom.communeSelect) {
+      dom.communeSelect.addEventListener("change", () => {
+        (async () => {
+          try {
+            const insee = String(dom.communeSelect.value);
+            const name =
+              dom.communeSelect.selectedOptions?.[0]?.textContent?.trim() || insee;
+
+            currentCommune.insee = insee;
+            currentCommune.name = name;
+
+            updateCommuneTitles();
+            await reloadForCurrentCommune();
+          } catch (e) {
+            console.error("Erreur lors du changement de commune", e);
+          }
+        })();
+      });
+    }
+  }
+
+  function updatePersonalControlsVisibility() {
+    const mode = getCurrentRealtimeMode();
+    if (dom.rtPersonalControls) {
+      dom.rtPersonalControls.style.display = (mode === "personal") ? "flex" : "none";
+    }
+    if (mode === "personal") renderPersonalArrayControls();
+    createOrUpdateRealtimeChart();
+  }
+
   function debounce(fn, delayMs) {
     let timeoutId = null;
     return function (...args) {
@@ -313,21 +462,26 @@
     };
   }
 
+  function getCurrentRealtimeMode() {
+    return dom.rtModeSelect ? dom.rtModeSelect.value : "total";
+  }
+
   // Debounce chart refresh so typing doesn't redraw on every keystroke.
   // Separate from the "fetch irradiance" debounce used for tilt/azimuth.
   const debouncedRealtimeChartUpdate = debounce(() => {
     if (getCurrentRealtimeMode() === "personal") createOrUpdateRealtimeChart();
   }, 1000);
 
-  function getCurrentRealtimeMode() {
-    return dom.rtModeSelect ? dom.rtModeSelect.value : "total";
-  }
-
   // ----------------------------
   // Persistence (localStorage)
   // ----------------------------
 
-  const PERSONAL_STORAGE_KEY = `${NAME_COMMUNE}Solar.personalArrays.v1`;
+  const PERSONAL_STORAGE_KEY_PREFIX = "Solar.personalArrays.v1";
+
+  function getPersonalStorageKey() {
+    // Store per-commune, using INSEE as the stable identifier
+    return `${PERSONAL_STORAGE_KEY_PREFIX}.${currentCommune.insee}`;
+  }
 
   function serializePersonalArrays(arrays) {
     return {
@@ -370,7 +524,7 @@
   function savePersonalArraysToStorage() {
     try {
       const payload = serializePersonalArrays(rt.personalArrays);
-      localStorage.setItem(PERSONAL_STORAGE_KEY, JSON.stringify(payload));
+      localStorage.setItem(getPersonalStorageKey(), JSON.stringify(payload));
     } catch (e) {
       // Ignore (private mode / blocked storage / quota). Widget still works.
     }
@@ -378,7 +532,7 @@
 
   function loadPersonalArraysFromStorage() {
     try {
-      const raw = localStorage.getItem(PERSONAL_STORAGE_KEY);
+      const raw = localStorage.getItem(getPersonalStorageKey());
       if (!raw) return false;
       const payload = JSON.parse(raw);
       const restored = restorePersonalArrays(payload);
@@ -440,6 +594,49 @@
     return all;
   }
 
+  async function fetchDepartments() {
+    const datasetId = "georef-france-commune-arrondissement-municipal";
+    const base = `${ODS_PUBLIC_BASE}/${datasetId}/records`;
+
+    const baseParams = {
+      select: "dep_code, dep_name, reg_name",
+      group_by: "dep_code, dep_name, reg_name",
+      order_by: "dep_code",
+    };
+
+    const rows = await fetchAllExploreRecords(base, baseParams, 100);
+
+    return rows.map(r => ({
+      depCode: r.dep_code,
+      depName: r.dep_name,
+      regName: r.reg_name,
+    }));
+  }
+
+  async function fetchCommunesInDepartment(depCode) {
+    if (geo.communesByDep.has(depCode)) {
+      return geo.communesByDep.get(depCode);
+    }
+
+    const datasetId = "georef-france-commune-arrondissement-municipal";
+    const base = `${ODS_PUBLIC_BASE}/${datasetId}/records`;
+
+    const baseParams = {
+      where: `dep_code='${depCode}'`,
+      select: "com_arm_code, com_arm_name",
+      order_by: "com_arm_name",
+    };
+
+    const rows = await fetchAllExploreRecords(base, baseParams, 100);
+    const communes = rows.map(r => ({
+      insee: String(r.com_arm_code).trim(), // keep as string (important for leading zeros)
+      name: String(r.com_arm_name ?? "").trim(),
+    }));
+
+    geo.communesByDep.set(depCode, communes);
+    return communes;
+  }
+
   async function datasetExists(datasetId) {
     const url = `${ODRE_BASE}/${datasetId}/records?limit=1`;
     const res = await fetch(url);
@@ -448,18 +645,17 @@
     return true;
   }
 
-  async function fetchCommuneIrisLabels() {
+  async function fetchCommuneIrisLabels(insee) {
     const datasetId = "georef-france-iris";
     const base = `${ODS_PUBLIC_BASE}/${datasetId}/records`;
 
     const baseParams = {
-      where: `com_code='${INSEE_COMMUNE}'`,
+      where: `com_arm_code='${insee}'`,
       select: "iris_code, iris_name",
       order_by: "iris_code",
     };
 
     const rows = await fetchAllExploreRecords(base, baseParams, 100);
-
     const labels = Object.create(null);
 
     for (const row of rows) {
@@ -492,7 +688,7 @@
     return availableYears;
   }
 
-  async function fetchCommuneYearData(year) {
+  async function fetchCommuneYearData(insee, year) {
     const datasetId = registreDatasetId(year);
     const base = `${ODRE_BASE}/${datasetId}/records`;
 
@@ -500,9 +696,9 @@
 
     const baseParams = {
       where: [
-        `codeinseecommune='${INSEE_COMMUNE}'`,
-        "codefiliere like 'SOLAI'",
-        "codetechnologie like 'PHOTV'",
+        `codeinseecommune='${insee}'`,
+        "codefiliere='SOLAI'",
+        "codetechnologie='PHOTV'",
       ].join(" AND "),
       select: [
         "codeiris as codeiris",
@@ -517,21 +713,17 @@
     };
 
     const rows = await fetchAllExploreRecords(base, baseParams, 100);
-
-    for (const r of rows) {
-      r.codeiris = normalizeIrisCode(r.codeiris);
-    }
-
+    for (const r of rows) r.codeiris = normalizeIrisCode(r.codeiris);
     return rows;
   }
 
-  async function fetchCommuneYearConsumptionData(year) {
+  async function fetchCommuneYearConsumptionData(insee, year) {
     const datasetId = "consommation-annuelle-d-electricite-et-gaz-par-iris";
     const base = `${AGENCE_ORE_BASE}/${datasetId}/records`;
 
     const baseParams = {
       where: [
-        `code_commune='${INSEE_COMMUNE}'`,
+        `code_commune='${insee}'`,
         `annee=date'${year}'`,
       ].join(" AND "),
       select: [
@@ -556,15 +748,15 @@
     return rows;
   }
 
-  async function fetchCommuneCurrentInstalledCapacityKw() {
+  async function fetchCommuneCurrentInstalledCapacityKw(insee) {
     const datasetId = "registre-national-installation-production-stockage-electricite-agrege";
     const base = `${ODRE_BASE}/${datasetId}/records`;
 
     const baseParams = {
       where: [
-        `codeinseecommune='${INSEE_COMMUNE}'`,
-        "codefiliere like 'SOLAI'",
-        "codetechnologie like 'PHOTV'",
+        `codeinseecommune='${insee}'`,
+        "codefiliere='SOLAI'",
+        "codetechnologie='PHOTV'",
       ].join(" AND "),
       select: [
         "codeiris as codeiris",
@@ -590,23 +782,29 @@
     let totalNb = 0;
 
     for (const row of rows) {
-      const v = Number(row.puis_ins_kw) || 0;
-      const n = Number(row.nb_inst) || 0;
-      row.puis_ins_kw = v;
-      row.nb_inst = n;
-      totalKw += v;
-      totalNb += n;
+      // Normalise IRIS code here so everyone gets consistent codes
+      row.codeiris = normalizeIrisCode(row.codeiris);
+
+      // Normalise numeric fields
+      const kw = Number(row.puis_ins_kw) || 0;
+      const nb = Number(row.nb_inst) || 0;
+
+      row.puis_ins_kw = kw;
+      row.nb_inst = nb;
+
+      totalKw += kw;
+      totalNb += nb;
     }
 
     return { totalKw, totalNb, perIris: rows };
   }
 
-  async function fetchCommuneLocation() {
-    const datasetId = "georef-france-commune";
+  async function fetchCommuneLocation(insee) {
+    const datasetId = "georef-france-commune-arrondissement-municipal";
     const base = `${ODS_PUBLIC_BASE}/${datasetId}/records`;
 
     const params = new URLSearchParams({
-      where: `com_code='${INSEE_COMMUNE}'`,
+      where: `com_arm_code='${insee}'`,
       select: "geo_point_2d",
       limit: "1",
     });
@@ -616,16 +814,15 @@
     const rows = json.results || [];
 
     if (!rows.length) {
-      throw new Error(`Aucune commune trouvée pour le code INSEE ${INSEE_COMMUNE}`);
+      throw new Error(`Aucune commune trouvée pour le code INSEE ${insee}`);
     }
 
     const row = rows[0];
     const point = row.geo_point_2d;
 
-    // In Explore v2.1, geo_point_2d is a record { lon, lat } in JSON.
     if (!point || typeof point.lat !== "number" || typeof point.lon !== "number") {
       throw new Error(
-        `Coordonnées géographiques introuvables pour la commune ${INSEE_COMMUNE}`
+        `Coordonnées géographiques introuvables pour la commune ${insee}`
       );
     }
 
@@ -844,7 +1041,7 @@
           return rows.reduce((sum, row) => sum + getValue(row, metricKey), 0);
         });
         return {
-          datasets: [{ label: `Total ${NAME_COMMUNE}`, data: values, stack: "stack1" }],
+          datasets: [{ label: `Total ${currentCommune.name}`, data: values, stack: "stack1" }],
           metricLabel: metricDef.label,
           metricUnit: metricDef.unit,
         };
@@ -1258,7 +1455,7 @@
       );
     } else {
       setRealtimeStatus(
-        `Capacité photovoltaïque installée à ${NAME_COMMUNE} : ` +
+        `Capacité photovoltaïque installée à ${currentCommune.name} : ` +
         `${rt.capTotalKw.toFixed(1)} kWc (${rt.capTotalNb} installations). ` +
         `Mise à jour environ une fois par heure.`
       );
@@ -1442,26 +1639,29 @@
     return results;
   }
 
-  async function initCommune() {
+  async function initCommuneData() {
     try {
-      irisLabels = await fetchCommuneIrisLabels();
+      irisLabels = await fetchCommuneIrisLabels(currentCommune.insee);
     } catch (e) {
       console.warn("Impossible de charger les noms d'IRIS :", e);
-      // Leave irisLabels empty; irisDisplayName will fall back
+      irisLabels = Object.create(null); // irisDisplayName will fall back
     }
   }
 
-  async function initHist() {
+  async function initOrReloadHist() {
     try {
       setHistStatus("Recherche des années disponibles…");
       hist.years = await findAvailableYears();
-      setHistStatus(`Années disponibles : ${hist.years.join(", ")}. Chargement des données pour ${NAME_COMMUNE}…`);
+
+      setHistStatus(
+        `Années disponibles : ${hist.years.join(", ")}. ` +
+        `Chargement des données pour ${currentCommune.name}…`
+      );
 
       await mapWithConcurrency(hist.years, CONCURRENCY, async (year) => {
-        // Fetch PV + consumption for the same year (year range driven by PV availability).
         const [pvRows, consoRows] = await Promise.all([
-          fetchCommuneYearData(year),
-          fetchCommuneYearConsumptionData(year).catch(() => []), // be resilient if a year is missing
+          fetchCommuneYearData(currentCommune.insee, year),
+          fetchCommuneYearConsumptionData(currentCommune.insee, year).catch(() => []),
         ]);
 
         hist.pvByYear[year] = pvRows || [];
@@ -1471,98 +1671,136 @@
       computeIrisLists();
       buildConsumptionIndexes();
 
-      setHistStatus(`Données chargées pour ${NAME_COMMUNE}. Vous pouvez changer l’indicateur avec le menu déroulant.`);
+      setHistStatus(
+        `Données chargées pour ${currentCommune.name}. ` +
+        "Vous pouvez changer l’indicateur avec le menu déroulant."
+      );
 
       const initialMetric = dom.hMetricSelect ? dom.hMetricSelect.value : "prod_an_kwh";
       createOrUpdateHistChart(initialMetric);
 
-      if (dom.hMetricSelect) dom.hMetricSelect.addEventListener("change", () => createOrUpdateHistChart(dom.hMetricSelect.value));
-      if (dom.hModeSelect) dom.hModeSelect.addEventListener("change", () => createOrUpdateHistChart(dom.hMetricSelect.value));
+      if (!hist.listenersAttached) {
+        if (dom.hMetricSelect) {
+          dom.hMetricSelect.addEventListener("change", () =>
+            createOrUpdateHistChart(dom.hMetricSelect.value)
+          );
+        }
+        if (dom.hModeSelect) {
+          dom.hModeSelect.addEventListener("change", () =>
+            createOrUpdateHistChart(dom.hMetricSelect.value)
+          );
+        }
+        hist.listenersAttached = true;
+      }
     } catch (err) {
       showError(dom.hStatus, "Erreur lors du chargement des données", err);
     }
   }
 
-  async function initRealtime() {
+  async function initOrReloadRealtime() {
     try {
       setRealtimeStatus("Chargement des coordonnées géographiques…");
 
-      const { lat, lon } = await fetchCommuneLocation();
+      const { lat, lon } = await fetchCommuneLocation(currentCommune.insee);
       rt.communeLat = lat;
       rt.communeLon = lon;
 
       setRealtimeStatus("Chargement de la capacité PV…");
 
-      const cap = await fetchCommuneCurrentInstalledCapacityKw();
-      if (cap.totalKw <= 0) {
-        setRealtimeStatus(`Capacité photovoltaïque totale nulle ou indisponible pour ${NAME_COMMUNE}.`);
-        return;
-      }
+      const cap = await fetchCommuneCurrentInstalledCapacityKw(currentCommune.insee);
 
-      rt.capTotalKw = cap.totalKw;
-      rt.capTotalNb = cap.totalNb;
+      rt.capTotalKw = cap.totalKw || 0;
+      rt.capTotalNb = cap.totalNb || 0;
       rt.capPerIris = cap.perIris || [];
 
-      // Load any saved "Mon installation" arrays before first fetch
-      loadPersonalArraysFromStorage();
+      if (!rt.personalLoaded) {
+        loadPersonalArraysFromStorage();
+        rt.personalLoaded = true;
+      }
 
       setRealtimeStatus("Chargement des données météo…");
+
       await fetchIrradianceAndTemperatureCommune();
       await refetchAllPersonalIrradiance();
 
-      function updatePersonalControlsVisibility() {
-        const mode = getCurrentRealtimeMode();
-        if (dom.rtPersonalControls) dom.rtPersonalControls.style.display = (mode === "personal") ? "flex" : "none";
-        if (mode === "personal") renderPersonalArrayControls();
-        createOrUpdateRealtimeChart();
-      }
-
-      if (dom.rtModeSelect) dom.rtModeSelect.addEventListener("change", updatePersonalControlsVisibility);
-      if (dom.rtForecastToggle) dom.rtForecastToggle.addEventListener("change", () => createOrUpdateRealtimeChart());
-
-      if (dom.rtAddArrayBtn) {
-        dom.rtAddArrayBtn.addEventListener("click", async () => {
-          const nextIndex = (rt.personalArrays || []).length + 1;
-          const arr = makeNewPersonalArray(nextIndex);
-          // friendly default: alternate +90 / -90 for quick East/West comparison
-          if (nextIndex % 2 === 0) arr.azimuth_deg = -90;
-          if (nextIndex % 3 === 0) arr.azimuth_deg = +90;
-          rt.personalArrays = (rt.personalArrays || []).concat([arr]);
-          savePersonalArraysToStorage();
-          renderPersonalArrayControls();
-          try {
-            await fetchIrradianceForArray(arr);
-          } catch (e) {
-            showError(dom.rtStatus, "Erreur lors de l'ajout du champ", e);
-          }
-          if (getCurrentRealtimeMode() === "personal") createOrUpdateRealtimeChart();
-        });
+      if (!rt.listenersAttached) {
+        if (dom.rtModeSelect) {
+          dom.rtModeSelect.addEventListener("change", updatePersonalControlsVisibility);
+        }
+        if (dom.rtForecastToggle) {
+          dom.rtForecastToggle.addEventListener("change", () => createOrUpdateRealtimeChart());
+        }
+        if (dom.rtAddArrayBtn) {
+          dom.rtAddArrayBtn.addEventListener("click", async () => {
+            const nextIndex = (rt.personalArrays || []).length + 1;
+            const arr = makeNewPersonalArray(nextIndex);
+            if (nextIndex % 2 === 0) arr.azimuth_deg = -90;
+            if (nextIndex % 3 === 0) arr.azimuth_deg = +90;
+            rt.personalArrays = (rt.personalArrays || []).concat([arr]);
+            savePersonalArraysToStorage();
+            renderPersonalArrayControls();
+            try {
+              await fetchIrradianceForArray(arr);
+            } catch (e) {
+              showError(dom.rtStatus, "Erreur lors de l'ajout du champ", e);
+            }
+            if (getCurrentRealtimeMode() === "personal") createOrUpdateRealtimeChart();
+          });
+        }
+        rt.listenersAttached = true;
       }
 
       updatePersonalControlsVisibility();
 
-      setInterval(async () => {
-        try {
-          await fetchIrradianceAndTemperatureCommune();
-          if (getCurrentRealtimeMode() === "personal") {
-            await refetchAllPersonalIrradiance();
+      // For communes with zero capacity, we still want the chart and status
+      // to reflect that, not keep the previous commune.
+      if (rt.capTotalKw <= 0) {
+        setRealtimeStatus(
+          `Capacité photovoltaïque totale nulle ou indisponible pour ${currentCommune.name}.`
+        );
+      }
+
+      if (!rt.refreshTimerId) {
+        rt.refreshTimerId = setInterval(async () => {
+          try {
+            await fetchIrradianceAndTemperatureCommune();
+            if (getCurrentRealtimeMode() === "personal") {
+              await refetchAllPersonalIrradiance();
+            }
+            createOrUpdateRealtimeChart();
+          } catch (e) {
+            showError(dom.rtStatus, "Erreur lors de la mise à jour", e);
           }
-          createOrUpdateRealtimeChart();
-        } catch (e) {
-          showError(dom.rtStatus, "Erreur lors de la mise à jour", e);
-        }
-      }, RT_REFRESH_INTERVAL_MS);
+        }, RT_REFRESH_INTERVAL_MS);
+      }
     } catch (err) {
       showError(dom.rtStatus, "Erreur lors du chargement des données temps réel", err);
     }
   }
 
-  // Run both widgets on page load.
+  async function reloadForCurrentCommune() {
+    updateCommuneTitles();
+    await initCommuneData();
+    await initOrReloadHist();
+    await initOrReloadRealtime();
+  }
+
+  async function initGeoUi() {
+    try {
+      geo.departments = await fetchDepartments();
+      populateDepSelect();
+      await populateCommuneSelectForCurrentDep();
+      attachCommuneUiListeners();
+      await reloadForCurrentCommune();
+    } catch (e) {
+      console.error("Erreur lors de l'initialisation des communes, utilisation de la commune par défaut :", e);
+      await reloadForCurrentCommune();
+    }
+  }
+
   window.addEventListener("DOMContentLoaded", async () => {
     cacheDom();
-    await initCommune(); // Wait for common data used everywhere to load.
-    initHist();
-    initRealtime();
+    await initGeoUi();
   });
 })();
 </script>

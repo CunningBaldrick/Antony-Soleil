@@ -5,7 +5,7 @@
   <meta
     name="viewport"
     content="width=device-width, initial-scale=1.0">
-  <title>Antony Solaire – Widget Photovoltaïque</title>
+  <title>Antony Soleil – Widget Photovoltaïque</title>
   <!-- Chart.js from CDN -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
@@ -86,7 +86,7 @@
       <label for="h-metric-select">Afficher :</label>
       <select id="h-metric-select">
         <option value="prod_an_kwh">Production annuelle</option>
-        <option value="puis_rac_kw">Puissance installée</option>
+        <option value="puis_ins_kw">Puissance installée</option>
         <option value="nb_inst">Nombre d'installations</option>
         <option value="conso_totale_kwh">Consommation annuelle</option>
       </select>
@@ -178,7 +178,7 @@
 
   const HIST_METRICS = {
     nb_inst: { label: "Nombre d'installations", unit: "", source: "pv" },
-    puis_rac_kw: { label: "Puissance PV raccordée au réseau", unit: "kWc", source: "pv" },
+    puis_ins_kw: { label: "Puissance PV installée", unit: "kWc", source: "pv" },
     prod_an_kwh: { label: "Production annuelle vers le réseau", unit: "kWh", source: "pv" },
     conso_totale_kwh: { label: "Consommation annuelle", unit: "kWh", source: "conso" },
   };
@@ -314,6 +314,64 @@
     if (codeiris === null || codeiris === undefined) return "Quartier inconnu";
     if (irisLabels[codeiris]) return irisLabels[codeiris];
     return `IRIS ${codeiris}`;
+  }
+
+  // Compute installed capacity for a single registre row.  Older raw data is
+  // inconsistent: sometimes puismaxinstallee has a value, but sometimes only
+  // puismaxrac does.  Use whichever is larger.
+  function computeRegistreRowCapacityKw(row) {
+    const inst = Number(row.puismaxinstallee);
+    const rac  = Number(row.puismaxrac);
+
+    const instKw = Number.isFinite(inst) && inst > 0 ? inst : 0;
+    const racKw  = Number.isFinite(rac)  && rac  > 0 ? rac  : 0;
+
+    return Math.max(instKw, racKw);
+  }
+
+  // Aggregate registre rows by IRIS, reusing the same logic for:
+  //   - historical yearly data (with energy field), and
+  //   - current installed capacity (capacity + nb of installations only).
+  //
+  // options.energyField: optional field name to sum for annual energy (e.g. "energy_kwh").
+  function aggregateRegistreByIris(rows, options = {}) {
+    const energyField = options.energyField || null;
+    const byIris = new Map();
+    let totalKw = 0;
+    let totalNb = 0;
+
+    for (const row of rows || []) {
+      const iris = normalizeIrisCode(row.codeiris);
+      const capKw = computeRegistreRowCapacityKw(row);
+      const nb = Number(row.nbinstallations) || 0;
+      const energy = energyField ? Number(row[energyField]) || 0 : 0;
+
+      let acc = byIris.get(iris);
+      if (!acc) {
+        acc = {
+          codeiris: iris,
+          nb_inst: 0,
+          puis_ins_kw: 0,
+        };
+        if (energyField) acc.prod_an_kwh = 0;
+        byIris.set(iris, acc);
+      }
+
+      acc.nb_inst += nb;
+      acc.puis_ins_kw += capKw;
+      if (energyField) acc.prod_an_kwh += energy;
+
+      totalKw += capKw;
+      totalNb += nb;
+    }
+
+    const perIris = Array.from(byIris.values()).sort((a, b) => {
+      if (a.codeiris === null) return -1;
+      if (b.codeiris === null) return 1;
+      return Number(a.codeiris) - Number(b.codeiris);
+    });
+
+    return { totalKw, totalNb, perIris };
   }
 
   function registreDatasetId(year) {
@@ -709,7 +767,9 @@
     const datasetId = registreDatasetId(year);
     const base = `${ODRE_BASE}/${datasetId}/records`;
 
-    const energyField = year < 2020 ? "energieannuelleinjectee" : "energieannuelleglissanteinjectee";
+    // Field name changed around 2020
+    const rawEnergyField =
+      year < 2020 ? "energieannuelleinjectee" : "energieannuelleglissanteinjectee";
 
     const baseParams = {
       where: [
@@ -718,20 +778,20 @@
         "codetechnologie='PHOTV'",
       ].join(" AND "),
       select: [
-        "codeiris as codeiris",
-        "sum(nbinstallations) as nb_inst",
-        // Since the energy numbers (energie injectee), are for energy sent
-        // to the grid, to be consistent we use capacity attached to the grid.
-        "sum(puismaxrac) as puis_rac_kw",
-        `sum(${energyField}) as prod_an_kwh`,
+        "codeiris",
+        "nbinstallations",
+        "puismaxinstallee",
+        "puismaxrac",
+        `${rawEnergyField} as energy_kwh`,
       ].join(", "),
-      group_by: "codeiris",
-      order_by: "codeiris",
+      // Order by all selected fields so LIMIT/OFFSET pagination is stable even
+      // without a primary key; ties are identical for our aggregation.
+      order_by: "codeiris, nbinstallations, puismaxinstallee, puismaxrac, energy_kwh",
     };
 
-    const rows = await fetchAllExploreRecords(base, baseParams, 100);
-    for (const r of rows) r.codeiris = normalizeIrisCode(r.codeiris);
-    return rows;
+    const rawRows = await fetchAllExploreRecords(base, baseParams, 100);
+    const { perIris } = aggregateRegistreByIris(rawRows, { energyField: "energy_kwh" });
+    return perIris;
   }
 
   async function fetchCommuneConsumptionData(insee, years) {
@@ -755,9 +815,9 @@
         `annee IN (${yearLiterals})`,
       ].join(" AND "),
       select: [
-        "annee as annee",
-        "code_iris as codeiris",
-        "filiere as filiere",
+        "annee",
+        "code_iris AS codeiris",
+        "filiere",
         "sum(conso_totale_mwh) as conso_totale_mwh",
       ].join(", "),
       group_by: "annee, code_iris, filiere",
@@ -796,44 +856,19 @@
         "codetechnologie='PHOTV'",
       ].join(" AND "),
       select: [
-        "codeiris as codeiris",
-        // As we just multiply the capacity by the irradiance to estimate the
-        // power, use the installed capacity, whether it is attached to the
-        // grid or not.  Consider, for example, that a small residential
-        // installation in the winter will typically self-consume all power
-        // produced, and send nothing to the grid.  Our multiplication will
-        // give a positive number: the amount produced and self-consumed.
-        // So we fundamentally aren't estimating the amount sent to the grid,
-        // which is why it makes no sense to use the capacity attached to the
-        // grid.
-        "sum(puismaxinstallee) as puis_ins_kw",
-        "sum(nbinstallations) as nb_inst",
+        "codeiris",
+        "nbinstallations",
+        "puismaxinstallee",
+        "puismaxrac",
       ].join(", "),
-      group_by: "codeiris",
-      order_by: "codeiris",
+      // Order by all selected fields so LIMIT/OFFSET pagination is stable even
+      // without a primary key; ties are identical for our aggregation.
+      order_by: "codeiris, nbinstallations, puismaxinstallee, puismaxrac",
     };
 
-    const rows = await fetchAllExploreRecords(base, baseParams, 100);
-
-    let totalKw = 0;
-    let totalNb = 0;
-
-    for (const row of rows) {
-      // Normalise IRIS code here so everyone gets consistent codes
-      row.codeiris = normalizeIrisCode(row.codeiris);
-
-      // Normalise numeric fields
-      const kw = Number(row.puis_ins_kw) || 0;
-      const nb = Number(row.nb_inst) || 0;
-
-      row.puis_ins_kw = kw;
-      row.nb_inst = nb;
-
-      totalKw += kw;
-      totalNb += nb;
-    }
-
-    return { totalKw, totalNb, perIris: rows };
+    const rawRows = await fetchAllExploreRecords(base, baseParams, 100);
+    const { totalKw, totalNb, perIris } = aggregateRegistreByIris(rawRows);
+    return { totalKw, totalNb, perIris };
   }
 
   async function fetchCommuneLocation(insee) {

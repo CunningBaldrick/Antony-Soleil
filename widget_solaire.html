@@ -95,7 +95,7 @@
     <div>
       <label for="h-mode-select">Découpage :</label>
       <select id="h-mode-select">
-        <option value="iris">Par quartier</option>
+        <option value="iris">Par quartier (IRIS)</option>
         <option value="total">Total de la commune</option>
       </select>
     </div>
@@ -105,14 +105,14 @@
 
   <canvas id="historyChart" width="800" height="400"></canvas>
 
-  <h2><span id="commune-name-rt">Antony</span> – production photovoltaïque en temps quasi réel</h2>
+  <h2><span id="commune-name-rt">Antony</span> – puissance photovoltaïque estimée (quasi temps réel)</h2>
 
   <div class="controls">
     <div>
       <label for="rt-mode-select">Affichage :</label>
       <select id="rt-mode-select">
         <option value="total">Total de la commune</option>
-        <option value="iris">Par quartier</option>
+        <option value="iris">Par quartier (IRIS)</option>
         <option value="personal">Mon installation</option>
       </select>
     </div>
@@ -139,7 +139,7 @@
     </div>
   </div>
 
-  <div id="rt-status" class="status">Chargement de l'irradiance…</div>
+  <div id="rt-status" class="status">Chargement des données…</div>
   <canvas id="realtimeChart" width="800" height="300"></canvas>
 
 <script>
@@ -178,25 +178,23 @@
 
   const HIST_METRICS = {
     nb_inst: { label: "Nombre d'installations", unit: "", source: "pv" },
-    puis_rac_kw: { label: "Puissance photovoltaïque raccordée au réseau", unit: "kWc", source: "pv" },
+    puis_rac_kw: { label: "Puissance PV raccordée au réseau", unit: "kWc", source: "pv" },
     prod_an_kwh: { label: "Production annuelle vers le réseau", unit: "kWh", source: "pv" },
     conso_totale_kwh: { label: "Consommation annuelle", unit: "kWh", source: "conso" },
   };
 
   const RT_METRICS = {
     power_kw: {
-      label: "Puissance estimée",
+      label: "Puissance PV estimée",
       unit: "kW",
-      axisLabel: "Puissance (kW)",
-      tooltip: (v) => `Puissance estimée : ${v.toFixed(1)} kW`,
+      digits: 1, // display 1 decimal
     },
 
     // In case we ever want to chart irradiance directly
     gti_wm2: {
       label: "Irradiance (plan incliné)",
       unit: "W/m²",
-      axisLabel: "Irradiance (W/m²)",
-      tooltip: (v) => `Irradiance : ${v.toFixed(0)} W/m²`,
+      digits: 0,
     },
   };
 
@@ -315,7 +313,7 @@
   function irisDisplayName(codeiris) {
     if (codeiris === null || codeiris === undefined) return "Quartier inconnu";
     if (irisLabels[codeiris]) return irisLabels[codeiris];
-    return `Secteur ${codeiris}`;
+    return `IRIS ${codeiris}`;
   }
 
   function registreDatasetId(year) {
@@ -338,6 +336,25 @@
   function showError(el, prefix, err) {
     console.error(err);
     setStatus(el, `${prefix} : ${err.message}`);
+  }
+
+  function metricAxisLabel(m) {
+    if (!m) return "";
+    return m.unit ? `${m.label} (${m.unit})` : m.label;
+  }
+
+  function metricFormatValue(m, v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return "";
+    const digits = (m && Number.isFinite(m.digits)) ? m.digits : 0;
+    return new Intl.NumberFormat(undefined, {
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    }).format(n);
+  }
+
+  function metricUnitSuffix(m) {
+    return (m && m.unit) ? ` ${m.unit}` : "";
   }
 
   function updateCommuneTitles() {
@@ -1056,7 +1073,7 @@
         return { label: irisDisplayName(code), data: values, stack: "stack1" };
       });
 
-      return { datasets, metricLabel: metricDef.label, metricUnit: metricDef.unit };
+      return { datasets };
     }
 
     // Consumption metric
@@ -1073,7 +1090,7 @@
           });
           return { label: fil, data: values, stack: "stack1" };
         });
-        return { datasets, metricLabel: metricDef.label, metricUnit: metricDef.unit };
+        return { datasets };
       }
 
       // IRIS mode: keep the same visual shape as PV (one dataset per IRIS),
@@ -1087,11 +1104,11 @@
         return { label: irisDisplayName(code), data: values, stack: "stack1", _codeiris: code };
       });
 
-      return { datasets, metricLabel: metricDef.label, metricUnit: metricDef.unit };
+      return { datasets };
     }
 
     // Fallback (shouldn't happen)
-    return { datasets: [], metricLabel: metricDef?.label || metricKey, metricUnit: metricDef?.unit || "" };
+    return { datasets: [] };
   }
 
   function intersectTimesSorted(seriesList) {
@@ -1151,7 +1168,7 @@
       return {
         labels: tl.labels,
         datasets: [{
-          label: "Puissance produite",
+          label: "Puissance PV estimée",
           data,
           borderWidth: 2,
           tension: 0.2,
@@ -1240,18 +1257,14 @@
     }
   }
 
-  function formatNumber(value, digits = 0) {
-    const n = Number(value || 0);
-    return new Intl.NumberFormat(undefined, { maximumFractionDigits: digits }).format(n);
-  }
-
   function createOrUpdateHistChart(metricKey) {
     if (!dom.histCanvas) return;
     const ctx = dom.histCanvas.getContext("2d");
     const mode = dom.hModeSelect ? dom.hModeSelect.value : "iris";
 
-    const { datasets, metricLabel, metricUnit } = buildHistDatasets(metricKey, mode);
-    const yLabel = metricUnit ? `${metricLabel} (${metricUnit})` : metricLabel;
+    const metricDef = HIST_METRICS?.[metricKey] || { label: metricKey, unit: "", digits: 0 };
+    const { datasets } = buildHistDatasets(metricKey, mode);
+    const yLabel = metricAxisLabel(metricDef);
 
     const isConso = (HIST_METRICS?.[metricKey]?.source === "conso");
     const stacked = isConso || (mode === "iris")
@@ -1260,8 +1273,7 @@
       label: (context) => {
         const label = context.dataset.label || "";
         const value = context.parsed.y;
-        const unit = metricUnit ? ` ${metricUnit}` : "";
-        return `${label}: ${formatNumber(value)}${unit}`;
+        return `${label}: ${metricFormatValue(metricDef, value)}${metricUnitSuffix(metricDef)}`;
       },
     };
 
@@ -1280,7 +1292,7 @@
         const lines = [];
         for (const fil of (hist.consoFilieres || [])) {
           const v = entry.byFiliere.get(fil) || 0;
-          if (v > 0) lines.push(`${fil}: ${formatNumber(v)} ${metricUnit}`);
+          if (v > 0) lines.push(`${fil}: ${metricFormatValue(metricDef, v)}${metricUnitSuffix(metricDef)}`);
         }
         return lines.length ? lines : "";
       };
@@ -1289,7 +1301,7 @@
     if (hist.chart) {
       hist.chart.data.labels = hist.years;
       hist.chart.data.datasets = datasets;
-      hist.chart.options.plugins.title.text = metricLabel;
+      hist.chart.options.plugins.title.text = metricDef.label;
       hist.chart.options.scales.y.title.text = yLabel;
       hist.chart.options.scales.x.stacked = stacked;
       hist.chart.options.scales.y.stacked = stacked;
@@ -1304,7 +1316,7 @@
       options: {
         responsive: true,
         plugins: {
-          title: { display: true, text: metricLabel },
+          title: { display: true, text: metricDef.label },
           tooltip: {
             callbacks: tooltipCallbacks,
           },
@@ -1348,13 +1360,14 @@
 
     const rtMetricKey = "power_kw";
     const rtMetric = RT_METRICS[rtMetricKey];
+    const yAxisLabel = metricAxisLabel(rtMetric);
 
     if (rt.chart) {
       rt.chart.data.labels = labels;
       rt.chart.data.datasets = datasets;
       rt.chart.options.plugins.title.text = rtMetric.label;
       rt.chart.options.scales.x.stacked = stacked;
-      rt.chart.options.scales.y.title.text = rtMetric.axisLabel;
+      rt.chart.options.scales.y.title.text = yAxisLabel;
       rt.chart.options.scales.y.stacked = stacked;
       rt.chart.update();
     } else {
@@ -1382,17 +1395,25 @@
                   const v = context.parsed.y;
                   if (v == null) return "";
 
-                  // Default behaviour for non-personal modes
-                  if (getCurrentRealtimeMode() !== "personal") return rtMetric.tooltip(v);
-
                   const ds = context.dataset || {};
-                  const name = ds.baseLabel || ds.label || "Champ";
-                  const t = (ds.panelTemps || [])[context.dataIndex];
-                  let msg = `${name} : ${v.toFixed(1)} kW`;
-                  if (typeof t === "number" && !Number.isNaN(t)) {
-                    msg += ` (température du panneau ≈ ${t.toFixed(1)} °C)`;
+                  const seriesName = ds.baseLabel || ds.label || "";
+
+                  // Value formatted from metric + unit appended once
+                  const valueTxt = metricFormatValue(rtMetric, v);
+                  const unitTxt = metricUnitSuffix(rtMetric);
+
+                  // Personal mode: add panel temperature (keep your existing feature)
+                  if (getCurrentRealtimeMode() === "personal") {
+                    const t = (ds.panelTemps || [])[context.dataIndex];
+                    let msg = `${seriesName} : ${valueTxt}${unitTxt}`;
+                    if (typeof t === "number" && Number.isFinite(t)) {
+                      msg += ` (température du panneau ≈ ${t.toFixed(1)} °C)`;
+                    }
+                    return msg;
                   }
-                  return msg;
+
+                  // Total / IRIS mode: series label is meaningful (total or IRIS name)
+                  return `${seriesName} : ${valueTxt}${unitTxt}`;
                 },
                 footer: (items) => {
                   if (getCurrentRealtimeMode() !== "personal") return "";
@@ -1410,7 +1431,7 @@
                     if (typeof v === "number" && !Number.isNaN(v)) total += v;
                   }
 
-                  return `Puissance totale : ${total.toFixed(1)} kW`;
+                  return `Puissance totale : ${metricFormatValue(rtMetric, total)}${metricUnitSuffix(rtMetric)}`;
                 }
               },
             },
@@ -1437,7 +1458,7 @@
             y: {
               beginAtZero: true,
               stacked,
-              title: { display: true, text: rtMetric.axisLabel },
+              title: { display: true, text: yAxisLabel},
             },
           },
         },

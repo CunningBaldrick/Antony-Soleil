@@ -734,35 +734,55 @@
     return rows;
   }
 
-  async function fetchCommuneYearConsumptionData(insee, year) {
+  async function fetchCommuneConsumptionData(insee, years) {
     const datasetId = "consommation-annuelle-d-electricite-et-gaz-par-iris";
     const base = `${AGENCE_ORE_BASE}/${datasetId}/records`;
+
+    // Normalise + deduplicate years
+    const yearList = Array.from(
+      new Set((years || []).map((y) => Number(y)))
+    ).filter((y) => Number.isFinite(y));
+
+    if (!yearList.length) {
+      return Object.create(null);
+    }
+
+    const yearLiterals = yearList.map((y) => `date'${y}'`).join(", ");
 
     const baseParams = {
       where: [
         `code_commune='${insee}'`,
-        `annee=date'${year}'`,
+        `annee IN (${yearLiterals})`,
       ].join(" AND "),
       select: [
+        "annee as annee",
         "code_iris as codeiris",
         "filiere as filiere",
         "sum(conso_totale_mwh) as conso_totale_mwh",
       ].join(", "),
-      group_by: "code_iris, filiere",
-      order_by: "code_iris, filiere",
+      group_by: "annee, code_iris, filiere",
+      order_by: "annee, code_iris, filiere",
     };
 
     const rows = await fetchAllExploreRecords(base, baseParams, 100);
 
+    // Bucket directly by numeric year
+    const byYear = Object.create(null);
+
     for (const r of rows) {
+      const year = Number(r.annee);
+      if (!Number.isFinite(year)) continue;
+
       const mwh = Number(r.conso_totale_mwh) || 0;
-      // Store everything in kWh to be comparable with PV prod_an_kwh
       r.conso_totale_kwh = mwh * 1000;
       r.codeiris = normalizeIrisCode(r.codeiris);
       if (typeof r.filiere !== "string") r.filiere = String(r.filiere || "");
+
+      if (!byYear[year]) byYear[year] = [];
+      byYear[year].push(r);
     }
 
-    return rows;
+    return byYear;
   }
 
   async function fetchCommuneCurrentInstalledCapacityKw(insee) {
@@ -1679,15 +1699,24 @@
         `Chargement des données pour ${currentCommune.name}…`
       );
 
-      await mapWithConcurrency(hist.years, CONCURRENCY, async (year) => {
-        const [pvRows, consoRows] = await Promise.all([
-          fetchCommuneYearData(currentCommune.insee, year),
-          fetchCommuneYearConsumptionData(currentCommune.insee, year).catch(() => []),
-        ]);
+      // Start the consumption fetch
+      const consoPromise = fetchCommuneConsumptionData(
+        currentCommune.insee,
+        hist.years
+      ).catch(() => Object.create(null));
 
+      // In parallel, load PV for each year
+      await mapWithConcurrency(hist.years, CONCURRENCY, async (year) => {
+        const pvRows = await fetchCommuneYearData(currentCommune.insee, year);
         hist.pvByYear[year] = pvRows || [];
-        hist.consoByYear[year] = consoRows || [];
       });
+
+      // Await the consumption result
+      const consoByYear = await consoPromise;
+
+      for (const y of hist.years) {
+        hist.consoByYear[y] = consoByYear[y] || [];
+      }
 
       computeIrisLists();
       buildConsumptionIndexes();
@@ -1802,8 +1831,11 @@
   async function reloadForCurrentCommune() {
     updateCommuneTitles();
     await initCommuneData();
-    await initOrReloadHist();
-    await initOrReloadRealtime();
+
+    await Promise.all([
+      initOrReloadHist(),
+      initOrReloadRealtime(),
+    ]);
   }
 
   async function initGeoUi() {
@@ -1812,16 +1844,27 @@
       populateDepSelect();
       await populateCommuneSelectForCurrentDep();
       attachCommuneUiListeners();
-      await reloadForCurrentCommune();
     } catch (e) {
-      console.error("Erreur lors de l'initialisation des communes, utilisation de la commune par défaut :", e);
-      await reloadForCurrentCommune();
+      console.error("Erreur lors de l'initialisation des communes :", e);
+      // Fall back on the default commune
     }
   }
 
   window.addEventListener("DOMContentLoaded", async () => {
     cacheDom();
-    await initGeoUi();
+
+    // Start loading data for the default commune
+    updateCommuneTitles();
+    const initialLoad = reloadForCurrentCommune().catch((e) => {
+      console.error("Erreur lors du chargement initial pour la commune par défaut :", e);
+    });
+
+    // Initialize the département/commune list in parallel
+    initGeoUi().catch((e) => {
+      console.error("Erreur lors de l'initialisation des sélecteurs de communes :", e);
+    });
+
+    await initialLoad;
   });
 })();
 </script>

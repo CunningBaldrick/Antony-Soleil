@@ -85,7 +85,7 @@
     <div>
       <label for="h-metric-select">Afficher :</label>
       <select id="h-metric-select">
-        <option value="prod_an_kwh">Production annuelle</option>
+        <option value="prod_an_kwh">Énergie injectée sur le réseau</option>
         <option value="puis_ins_kw">Puissance installée</option>
         <option value="nb_inst">Nombre d'installations</option>
         <option value="conso_totale_kwh">Consommation annuelle</option>
@@ -179,7 +179,7 @@
   const HIST_METRICS = {
     nb_inst: { label: "Nombre d'installations", unit: "", source: "pv" },
     puis_ins_kw: { label: "Puissance PV installée", unit: "kWc", source: "pv" },
-    prod_an_kwh: { label: "Production annuelle vers le réseau", unit: "kWh", source: "pv" },
+    prod_an_kwh: { label: "Énergie annuelle injectée sur le réseau", unit: "kWh", source: "pv" },
     conso_totale_kwh: { label: "Consommation annuelle", unit: "kWh", source: "conso" },
   };
 
@@ -1321,14 +1321,29 @@
     const { datasets } = buildHistDatasets(metricKey, mode);
     const yLabel = metricAxisLabel(metricDef);
 
-    const isConso = (HIST_METRICS?.[metricKey]?.source === "conso");
+    const source = HIST_METRICS?.[metricKey]?.source;
+
+    const isPv = (source === "pv");
+    const isConso = (source === "conso");
+
     const stacked = isConso || (mode === "iris")
 
     const tooltipCallbacks = {
       label: (context) => {
-        const label = context.dataset.label || "";
+        let label = context.dataset.label || "";
+
+        if (
+          isPv &&
+          mode === "iris" &&
+          label === "Quartier inconnu"
+        ) {
+           label += " (anonymisation ou quartier non renseigné)";
+        }
+
         const value = context.parsed.y;
-        return `${label}: ${metricFormatValue(metricDef, value)}${metricUnitSuffix(metricDef)}`;
+        let line = `${label}: ${metricFormatValue(metricDef, value)}${metricUnitSuffix(metricDef)}`;
+
+        return line;
       },
     };
 

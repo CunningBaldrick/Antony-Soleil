@@ -491,6 +491,7 @@
           try {
             await populateCommuneSelectForCurrentDep();
             updateCommuneTitles();
+            saveLastCommuneToStorage();
             await reloadForCurrentCommune();
           } catch (e) {
             console.error("Erreur lors du changement de département", e);
@@ -511,6 +512,7 @@
             currentCommune.name = name;
 
             updateCommuneTitles();
+            saveLastCommuneToStorage();
             await reloadForCurrentCommune();
           } catch (e) {
             console.error("Erreur lors du changement de commune", e);
@@ -551,11 +553,51 @@
   // Persistence (localStorage)
   // ----------------------------
 
-  const PERSONAL_STORAGE_KEY_PREFIX = "Solar.personalArrays.v1";
+  const LAST_COMMUNE_STORAGE_KEY = "Solar.lastCommune.v1";
 
-  function getPersonalStorageKey() {
+  function saveLastCommuneToStorage() {
+    try {
+      const payload = {
+        v: 1,
+        savedAt: new Date().toISOString(),
+        insee: String(currentCommune.insee || "").trim(),
+        name: String(currentCommune.name || "").trim(),
+        depCode: String(currentCommune.depCode || "").trim(),
+      };
+      localStorage.setItem(LAST_COMMUNE_STORAGE_KEY, JSON.stringify(payload));
+    } catch (e) {
+      // Ignore (private mode / blocked storage / quota)
+    }
+  }
+
+  function loadLastCommuneFromStorage() {
+    try {
+      const raw = localStorage.getItem(LAST_COMMUNE_STORAGE_KEY);
+      if (!raw) return false;
+
+      const payload = JSON.parse(raw);
+      if (!payload || payload.v !== 1) return false;
+
+      if (typeof payload.insee === "string" && payload.insee.trim()) {
+        currentCommune.insee = payload.insee.trim();
+      }
+      if (typeof payload.name === "string" && payload.name.trim()) {
+        currentCommune.name = payload.name.trim();
+      }
+      if (typeof payload.depCode === "string" && payload.depCode.trim()) {
+        currentCommune.depCode = payload.depCode.trim();
+      }
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  const ARRAYS_STORAGE_KEY_PREFIX = "Solar.personalArrays.v1";
+
+  function getArraysStorageKey() {
     // Store per-commune, using INSEE as the stable identifier
-    return `${PERSONAL_STORAGE_KEY_PREFIX}.${currentCommune.insee}`;
+    return `${ARRAYS_STORAGE_KEY_PREFIX}.${currentCommune.insee}`;
   }
 
   function serializePersonalArrays(arrays) {
@@ -599,15 +641,15 @@
   function savePersonalArraysToStorage() {
     try {
       const payload = serializePersonalArrays(rt.personalArrays);
-      localStorage.setItem(getPersonalStorageKey(), JSON.stringify(payload));
+      localStorage.setItem(getArraysStorageKey(), JSON.stringify(payload));
     } catch (e) {
-      // Ignore (private mode / blocked storage / quota). Widget still works.
+      // Ignore (private mode / blocked storage / quota).
     }
   }
 
   function loadPersonalArraysFromStorage() {
     try {
-      const raw = localStorage.getItem(getPersonalStorageKey());
+      const raw = localStorage.getItem(getArraysStorageKey());
       if (!raw) return false;
       const payload = JSON.parse(raw);
       const restored = restorePersonalArrays(payload);
@@ -1903,13 +1945,13 @@
   window.addEventListener("DOMContentLoaded", async () => {
     cacheDom();
 
-    // Start loading data for the default commune
+    loadLastCommuneFromStorage();
+
     updateCommuneTitles();
     const initialLoad = reloadForCurrentCommune().catch((e) => {
       console.error("Erreur lors du chargement initial pour la commune par défaut :", e);
     });
 
-    // Initialize the département/commune list in parallel
     initGeoUi().catch((e) => {
       console.error("Erreur lors de l'initialisation des sélecteurs de communes :", e);
     });

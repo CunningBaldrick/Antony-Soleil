@@ -152,9 +152,17 @@
   const DEFAULT_INSEE_COMMUNE = "92002"; // Antony
   const DEFAULT_DEP_CODE = "92";         // Hauts-de-Seine
 
-  const PANEL_TILT_DEG = 30;     // typical rooftop tilt
-  const PANEL_AZIMUTH_DEG = 0;   // 0 = south
-  const CALIB_K = 0.52;          // calibration factor, see calibrate.py
+  const DEFAULT_PANEL_TILT_DEG = 30;   // fallback until commune latitude is known
+  const DEFAULT_PANEL_AZIMUTH_DEG = 0; // fallback until commune latitude is known (0 = south)
+  const CALIB_K = 0.52;                // calibration factor, see calibrate.py
+
+  // Smooth heuristic for an annual-production-oriented fixed array:
+  // - face the equator (south in the north hemisphere, north in the south hemisphere)
+  // - flatten progressively as we approach the equator, where azimuth matters little
+  //
+  // The exact optimum depends on the objective (annual vs winter production), local climate,
+  // and mounting constraints, so this is only a default suggestion for the widget.
+  const EQUATOR_FLAT_BAND_DEG = 3;
 
 
   const NOCT = 45;       // Nominal operating cell temperature, °C
@@ -283,8 +291,8 @@
         id: "arr1",
         name: "Champ 1",
         p_kwc: 3.0,
-        tilt_deg: PANEL_TILT_DEG,
-        azimuth_deg: PANEL_AZIMUTH_DEG,
+        tilt_deg: DEFAULT_PANEL_TILT_DEG,
+        azimuth_deg: DEFAULT_PANEL_AZIMUTH_DEG,
         perf_factor: 0.85,
         irrPast: [],
         irrForecast: [],
@@ -1127,13 +1135,89 @@
     return Math.min(hi, Math.max(lo, v));
   }
 
+  function getOptimalFixedPanelOrientation(latDeg) {
+    const absLat = Math.abs(Number(latDeg) || 0);
+
+    // Near the equator, a shallow/flat default avoids a visually arbitrary azimuth flip.
+    if (absLat <= EQUATOR_FLAT_BAND_DEG) {
+      return {
+        tilt_deg: 0,
+        azimuth_deg: 0,
+        facing_label: "à plat",
+      };
+    }
+
+    // Simple smooth annual-production heuristic for fixed arrays.
+    // Examples:
+    //  - 49°  -> about 37°
+    //  - 45°  -> about 34°
+    //  - 21°  -> about 16°
+    const tiltDeg = clamp(Math.round(0.76 * absLat), 0, 60);
+    const azimuthDeg = latDeg >= 0 ? 0 : 180; // 0 = south, 180 = north
+
+    return {
+      tilt_deg: tiltDeg,
+      azimuth_deg: azimuthDeg,
+      facing_label: latDeg >= 0 ? "plein sud" : "plein nord",
+    };
+  }
+
+  function getDefaultArrayOrientationForCurrentCommune() {
+    return getOptimalFixedPanelOrientation(rt.communeLat);
+  }
+
+  function formatAzimuthLabel(azimuthDeg) {
+    const az = Number(azimuthDeg);
+    if (!Number.isFinite(az)) return "azimut inconnu";
+    if (Math.abs(az) === 180) return "plein nord";
+    if (az === 0) return "plein sud";
+    if (az < 0) return `${Math.abs(az)}° vers l’est depuis le sud`;
+    return `${az}° vers l’ouest depuis le sud`;
+  }
+
+  function formatOrientationForHumans(tiltDeg, azimuthDeg) {
+    const tilt = Number(tiltDeg);
+    if (!Number.isFinite(tilt)) return "orientation inconnue";
+    if (tilt === 0) return "inclinaison 0° (à plat, azimut indifférent)";
+    return `inclinaison ${tilt}°, ${formatAzimuthLabel(azimuthDeg)}`;
+  }
+
+  function applyDefaultOrientationToPersonalArrays(arrays) {
+    const defaults = getDefaultArrayOrientationForCurrentCommune();
+    return (arrays || []).map((a) => ({
+      ...a,
+      tilt_deg: defaults.tilt_deg,
+      azimuth_deg: defaults.azimuth_deg,
+      irrPast: [],
+      irrForecast: [],
+    }));
+  }
+
+  function normalizeAzimuthDeg(a) {
+    let x = Number(a) || 0;
+    while (x > 180) x -= 360;
+    while (x <= -180) x += 360;
+    return x;
+  }
+
+  function getDefaultAzimuthOffsetForArrayIndex(idx) {
+    const offsets = [0, 180, 90, -90];
+    if (idx < offsets.length) return offsets[idx];
+    return offsets[idx % offsets.length];
+  }
+
   function makeNewPersonalArray(nextIndex) {
+    const base = getDefaultArrayOrientationForCurrentCommune();
+    const idx0 = Math.max(0, nextIndex - 1);
+
     return {
       id: `arr${Date.now()}_${Math.floor(Math.random() * 1e6)}`,
       name: `Champ ${nextIndex}`,
       p_kwc: 3.0,
-      tilt_deg: PANEL_TILT_DEG,
-      azimuth_deg: PANEL_AZIMUTH_DEG,
+      tilt_deg: base.tilt_deg,
+      azimuth_deg: normalizeAzimuthDeg(
+        base.azimuth_deg + getDefaultAzimuthOffsetForArrayIndex(idx0)
+      ),
       perf_factor: 0.85,
       irrPast: [],
       irrForecast: [],
@@ -1581,15 +1665,19 @@
       const n = (rt.personalArrays || []).length;
       const sumPkwc = (rt.personalArrays || []).reduce((s, a) => s + (Number(a.p_kwc) || 0), 0);
       const locString = formatCommuneLocation();
+      const defaults = getDefaultArrayOrientationForCurrentCommune();
       setRealtimeStatus(
         `Estimation basée sur vos paramètres (${n} champ${n > 1 ? "s" : ""}, ` +
         `total = ${sumPkwc.toFixed(1)} kWc, ${locString}). ` +
+        `Orientation par défaut suggérée pour cette commune : ${formatOrientationForHumans(defaults.tilt_deg, defaults.azimuth_deg)}. ` +
         `Mise à jour environ une fois par heure.`
       );
     } else {
+      const defaults = getDefaultArrayOrientationForCurrentCommune();
       setRealtimeStatus(
         `Capacité photovoltaïque installée à ${currentCommune.name} : ` +
         `${rt.capTotalKw.toFixed(1)} kWc (${rt.capTotalNb} installations). ` +
+        `Estimation avec ${formatOrientationForHumans(defaults.tilt_deg, defaults.azimuth_deg)}. ` +
         `Mise à jour environ une fois par heure.`
       );
     }
@@ -1603,9 +1691,17 @@
     if (rt.communeLat == null || rt.communeLon == null) return;
 
     const [irr, temp] = await Promise.all([
-      fetchIrradianceSeries(rt.communeLat, rt.communeLon,
-                            PANEL_TILT_DEG, PANEL_AZIMUTH_DEG,
-                            RT_PAST_HOURS, RT_FORECAST_HOURS),
+      (() => {
+        const defaults = getDefaultArrayOrientationForCurrentCommune();
+        return fetchIrradianceSeries(
+          rt.communeLat,
+          rt.communeLon,
+          defaults.tilt_deg,
+          defaults.azimuth_deg,
+          RT_PAST_HOURS,
+          RT_FORECAST_HOURS
+        );
+      })(),
       fetchTemperatureSeries(rt.communeLat, rt.communeLon,
                              RT_PAST_HOURS, RT_FORECAST_HOURS),
     ]);
@@ -1855,10 +1951,15 @@
       rt.capTotalNb = cap.totalNb || 0;
       rt.capPerIris = cap.perIris || [];
 
-      if (!rt.personalLoaded) {
-        loadPersonalArraysFromStorage();
-        rt.personalLoaded = true;
+      // Personal arrays are stored per commune. On commune change, reload the
+      // commune-specific configuration; otherwise initialise one array with the
+      // local default orientation.
+      if (!loadPersonalArraysFromStorage()) {
+        rt.personalArrays = applyDefaultOrientationToPersonalArrays([
+          makeNewPersonalArray(1),
+        ]);
       }
+      rt.personalLoaded = true;
 
       setRealtimeStatus("Chargement des données météo…");
 
@@ -1876,16 +1977,17 @@
           dom.rtAddArrayBtn.addEventListener("click", async () => {
             const nextIndex = (rt.personalArrays || []).length + 1;
             const arr = makeNewPersonalArray(nextIndex);
-            if (nextIndex % 2 === 0) arr.azimuth_deg = -90;
-            if (nextIndex % 3 === 0) arr.azimuth_deg = +90;
+
             rt.personalArrays = (rt.personalArrays || []).concat([arr]);
             savePersonalArraysToStorage();
             renderPersonalArrayControls();
+
             try {
               await fetchIrradianceForArray(arr);
             } catch (e) {
               showError(dom.rtStatus, "Erreur lors de l'ajout du champ", e);
             }
+
             if (getCurrentRealtimeMode() === "personal") createOrUpdateRealtimeChart();
           });
         }
@@ -1897,8 +1999,10 @@
       // For communes with zero capacity, we still want the chart and status
       // to reflect that, not keep the previous commune.
       if (rt.capTotalKw <= 0) {
+        const defaults = getDefaultArrayOrientationForCurrentCommune();
         setRealtimeStatus(
-          `Capacité photovoltaïque totale nulle ou indisponible pour ${currentCommune.name}.`
+          `Capacité photovoltaïque totale nulle ou indisponible pour ${currentCommune.name}. ` +
+          `Estimation avec ${formatOrientationForHumans(defaults.tilt_deg, defaults.azimuth_deg)}.`
         );
       }
 

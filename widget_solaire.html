@@ -11,13 +11,16 @@
   <style>
     body {
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      margin: 0;
+      margin: 0 auto;
       padding: 1rem;
+      max-width: 960px;
     }
+
     h1 {
       font-size: 1.5rem;
       margin-bottom: 0.5rem;
     }
+
     .controls {
       display: flex;
       flex-wrap: wrap;
@@ -25,22 +28,22 @@
       gap: 1rem;
       margin-bottom: 1rem;
     }
+
     label {
       font-weight: 600;
     }
+
     select {
       padding: 0.25rem 0.5rem;
       font-size: 0.95rem;
     }
+
     .status {
       margin-top: 0.5rem;
       font-size: 0.9rem;
       color: #555;
     }
-    canvas {
-      max-width: 100%;
-      margin-top: 1rem;
-    }
+
     button {
       padding: 0.28rem 0.6rem;
       font-size: 0.95rem;
@@ -49,7 +52,11 @@
       background: #fafafa;
       cursor: pointer;
     }
-    button:hover { background: #f2f2f2; }
+
+    button:hover {
+      background: #f2f2f2;
+    }
+
     .rt-array-row {
       display: flex;
       flex-wrap: wrap;
@@ -60,11 +67,47 @@
       border-radius: 0.75rem;
       background: #fff;
     }
+
     .rt-array-row input[type="number"] {
       width: 4rem;
       margin-left: 0.25rem;
     }
-    .rt-array-name { width: 9rem; }
+
+    .rt-array-name {
+      width: 9rem;
+    }
+
+    .chart-wrap {
+      position: relative;
+      width: 100%;
+      height: 420px;
+      margin-top: 1rem;
+    }
+
+    .chart-wrap canvas {
+      display: block;
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    @media (max-width: 640px) {
+      body {
+        padding: 0.75rem;
+      }
+
+      .controls {
+        gap: 0.6rem;
+        margin-bottom: 0.75rem;
+      }
+
+      .chart-wrap {
+        height: 300px;
+      }
+
+      .rt-array-name {
+        width: 100%;
+      }
+    }
   </style>
 </head>
 <body>
@@ -103,7 +146,9 @@
 
   <div id="h-status" class="status">Chargement des données…</div>
 
-  <canvas id="historyChart" width="800" height="400"></canvas>
+  <div class="chart-wrap">
+    <canvas id="historyChart" width="800" height="400"></canvas>
+  </div>
 
   <h2><span id="commune-name-rt">Antony</span> – puissance photovoltaïque estimée (quasi temps réel)</h2>
 
@@ -140,7 +185,10 @@
   </div>
 
   <div id="rt-status" class="status">Chargement des données…</div>
-  <canvas id="realtimeChart" width="800" height="300"></canvas>
+
+  <div class="chart-wrap">
+    <canvas id="realtimeChart" width="800" height="300"></canvas>
+  </div>
 
 <script>
 (() => {
@@ -1511,6 +1559,7 @@
       data: { labels: hist.years, datasets },
       options: {
         responsive: true,
+        maintainAspectRatio: false,
         plugins: {
           title: { display: true, text: metricDef.label },
           tooltip: {
@@ -1572,6 +1621,7 @@
         data: { labels, datasets },
         options: {
           responsive: true,
+          maintainAspectRatio: false,
           interaction: { mode: "index", intersect: false },
           plugins: {
             title: { display: true, text: rtMetric.label },

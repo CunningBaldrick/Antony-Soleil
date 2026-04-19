@@ -2064,3 +2064,41 @@
   });
 })();
 </script>
+
+<script>
+(() => {
+  let parentOrigin = null;
+
+  function sendHeight() {
+    if (!parentOrigin) return;
+
+    const h = Math.max(
+      document.body.scrollHeight,
+      document.documentElement.scrollHeight
+    );
+
+    window.parent.postMessage(
+      { type: "widget-height", height: h },
+      parentOrigin
+    );
+  }
+
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (!data || data.type !== "widget-init") return;
+
+    parentOrigin = event.origin;
+    sendHeight();
+  });
+
+  window.addEventListener("load", sendHeight);
+  window.addEventListener("resize", sendHeight);
+
+  const ro = new ResizeObserver(sendHeight);
+  ro.observe(document.body);
+  ro.observe(document.documentElement);
+
+  setTimeout(sendHeight, 300);
+  setTimeout(sendHeight, 1000);
+})();
+</script>
